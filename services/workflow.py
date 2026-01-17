@@ -14,10 +14,10 @@ from datetime import datetime
 from typing import List, Optional
 
 from sqlalchemy import Column, DateTime, Enum as SAEnum, ForeignKey, Integer, String, Text
-from sqlalchemy.orm import Session, relationship
+from sqlalchemy orm import Session, relationship
 
 from models import database
-from models.schemas import (
+from models schemas import (
     EventCreate,
     EventRead,
     TaskCreate,
@@ -27,7 +27,7 @@ from models.schemas import (
     WorkflowRead,
     WorkflowState,
 )
-from services.rules import evaluate_rules_for_workflow
+from services rules import evaluate_rules_for_workflow
 
 
 class Workflow(database.Base):
