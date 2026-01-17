@@ -14,8 +14,8 @@ from typing import List
 from fastapi import Depends, FastAPI, HTTPException, Path, status
 from fastapi.middleware.cors import CORSMiddleware
 
-from .models.database import Base, engine, get_db
-from .models.schemas import (
+from models.database import Base, engine, get_db
+from models.schemas import (
     EventCreate,
     EventRead,
     RuleCreate,
@@ -26,8 +26,8 @@ from .models.schemas import (
     WorkflowCreate,
     WorkflowRead,
 )
-from .services import workflow as workflow_service
-from .services import rules as rules_service
+from services import workflow as workflow_service
+from services import rules as rules_service
 
 # Configure logging
 logging.basicConfig(level=logging.INFO)
