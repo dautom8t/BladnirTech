@@ -17,7 +17,7 @@ from sqlalchemy import Column, DateTime, Enum as SAEnum, ForeignKey, Integer, St
 from sqlalchemy.orm import Session, relationship
 
 from models import database
-from models schemas import (
+from models.schemas import (
     EventCreate,
     EventRead,
     TaskCreate,
