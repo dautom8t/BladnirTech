@@ -18,7 +18,7 @@ from __future__ import annotations
 import logging
 from typing import List
 
-from sqlalchemy orm import Session
+from sqlalchemy.orm import Session
 
 from models import database
 from models schemas import RuleCreate, RuleRead, WorkflowState
