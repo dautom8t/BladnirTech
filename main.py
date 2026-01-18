@@ -36,7 +36,31 @@ logger = logging.getLogger(__name__)
 # Create all tables at startup.  In production you may use alembic migrations.
 Base.metadata.create_all(bind=engine)
 
-app = FastAPI(title="PharmAI Middleware API", version="0.1.0")
+from fastapi import FastAPI
+from fastapi.responses import HTMLResponse
+
+app = FastAPI(title="PharmAI Solutions Demo")
+
+@app.get("/health")
+def health():
+    return {"status": "ok"}
+
+@app.get("/", response_class=HTMLResponse)
+def home():
+    return """
+    <html>
+      <head><title>PharmAI Solutions Demo</title></head>
+      <body style="font-family: Arial; padding: 24px;">
+        <h1>PharmAI Solutions</h1>
+        <p>Workflow Orchestration Middleware (Demo)</p>
+        <ul>
+          <li><a href="/demo">Open Demo UI</a></li>
+          <li><a href="/docs">Open API Docs</a></li>
+        </ul>
+      </body>
+    </html>
+    """
+
 
 # Allow cross‑origin requests for development
 app.add_middleware(
