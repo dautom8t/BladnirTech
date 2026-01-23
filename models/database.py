@@ -16,7 +16,7 @@ from sqlalchemy import create_engine
 from sqlalchemy.ext.declarative import declarative_base
 from sqlalchemy.orm import sessionmaker, Session
 
-DATABASE_URL: str = os.getenv("DATABASE_URL", "sqlite:///./pharmAI.db")
+DATABASE_URL: str = os.getenv("DATABASE_URL", "sqlite:///./BladnirTech.db")
 
 engine = create_engine(
     DATABASE_URL,
