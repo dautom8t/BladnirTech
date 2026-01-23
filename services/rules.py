@@ -1,5 +1,5 @@
 """
-Rules engine for the PharmAI middleware.
+Rules engine for the Bladnir Tech.
 
 Rules encapsulate payer, plan or clinical logic that determine when certain
 workflow transitions or tasks should occur.  Each rule has a `condition`
@@ -11,23 +11,21 @@ dynamically in a restricted environment.
 ⚠️ **Security Notice**: Executing code from the database is dangerous.  In a
 real implementation you should use a safe expression language or DSL instead
 of Python `eval`/`exec`.  This demonstration uses Python for brevity.
-"""
+
+
 
 from __future__ import annotations
 
 import logging
 from typing import List
 
+from sqlalchemy import Column, Integer, String, Text
 from sqlalchemy.orm import Session
 
 from models import database
-from models.schemas import RuleCreate, RuleRead, WorkflowState
+from models.schemas import RuleCreate, WorkflowState
 
-# Create a logger for the rules engine
 logger = logging.getLogger(__name__)
-
-# Define ORM models (to be created below) via Base from database
-from sqlalchemy import Column, Integer, String, Text
 
 
 class Rule(database.Base):
@@ -58,22 +56,21 @@ def list_rules(db: Session) -> List[Rule]:
     return db.query(Rule).all()
 
 
-def evaluate_rules_for_workflow(db: Session, workflow: "Workflow") -> None:
-    """Evaluate all rules against a given workflow.
-
-    If a rule's condition evaluates to True, its action is executed.  The
-    workflow instance passed in is a SQLAlchemy model from the session; any
-    mutations will be persisted when the session commits.
-    """
+def evaluate_rules_for_workflow(db: Session, workflow) -> None:
+    """Evaluate all rules against a given workflow."""
     rules = list_rules(db)
+
+    # Minimal hardening: remove builtins from eval/exec environment
+    safe_globals = {"__builtins__": {}}
+
     for rule in rules:
         env = {
             "workflow": workflow,
             "WorkflowState": WorkflowState,
         }
         try:
-            if eval(rule.condition, {}, env):
-                logger.info("Rule '%s' triggered for workflow %s", rule.name, workflow.id)
-                exec(rule.action, {}, env)
+            if eval(rule.condition, safe_globals, env):
+                logger.info("Rule '%s' triggered for workflow %s", rule.name, getattr(workflow, "id", "?"))
+                exec(rule.action, safe_globals, env)
         except Exception as e:
             logger.exception("Error evaluating rule '%s': %s", rule.name, e)
