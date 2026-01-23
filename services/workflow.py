@@ -37,7 +37,12 @@ class Workflow(database.Base):
     description = Column(Text, nullable=True)
     state = Column(SAEnum(WorkflowState), nullable=False, default=WorkflowState.ORDERED)
     created_at = Column(DateTime, default=datetime.utcnow, nullable=False)
-    updated_at = Column(DateTime, default=datetime.utcnow, nullable=False)
+    updated_at = Column(
+    DateTime,
+    default=datetime.utcnow,
+    onupdate=datetime.utcnow,
+    nullable=False
+)
 
     tasks = relationship("Task", back_populates="workflow", cascade="all, delete-orphan")
     events = relationship("Event", back_populates="workflow", cascade="all, delete-orphan")
