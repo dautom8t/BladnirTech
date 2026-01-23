@@ -1,5 +1,5 @@
 """
-FastAPI application exposing the PharmAI middleware API.
+FastAPI application exposing the Bladnir Tech API.
 
 This module wires together the workflow engine, rules engine and integration
 stubs into a RESTful API.  It demonstrates how you might build a middleware
@@ -45,9 +45,9 @@ app = FastAPI(title="Bladnir Tech Demo")
 def home():
     return """
     <html>
-      <head><title>PharmAI Demo</title></head>
+      <head><title>Bladnir Tech Demo</title></head>
       <body style="font-family: Arial; padding: 30px;">
-        <h1>PharmAI Solutions</h1>
+        <h1>Bladnir Tech</h1>
 
         <p><b>Workflow Orchestration Middleware Demo</b></p>
 
@@ -67,7 +67,7 @@ def health():
 def home():
     return """
     <html>
-      <head><title>PharmAI Solutions Demo</title></head>
+      <head><title>Bladnir Tech Demo</title></head>
       <body style="font-family: Arial; padding: 24px;">
         <h1>Bladnir Tech</h1>
         <p>Workflow Orchestration Middleware (Demo)</p>
@@ -75,6 +75,40 @@ def home():
           <li><a href="/demo">Open Demo UI</a></li>
           <li><a href="/docs">Open API Docs</a></li>
         </ul>
+      </body>
+    </html>
+    """
+@app.get("/demo", response_class=HTMLResponse)
+def demo_ui():
+    return """
+    <html>
+      <head><title>Demo UI</title></head>
+      <body style="font-family: Arial; padding: 30px;">
+        <h2>Bladnir Tech Demo</h2>
+
+        <p>Click the button below to create a workflow.</p>
+
+        <button onclick="createWorkflow()">Create Workflow</button>
+
+        <pre id="out" style="margin-top:15px; background:#111; color:#0f0; padding:10px;"></pre>
+
+        <script>
+          async function createWorkflow(){
+            const res = await fetch('/workflows', {
+              method: 'POST',
+              headers: {'Content-Type': 'application/json'},
+              body: JSON.stringify({
+                name: "Medication Order Demo",
+                description: "Order → Access → Dispense"
+              })
+            });
+
+            const data = await res.json();
+            document.getElementById("out").textContent =
+              JSON.stringify(data, null, 2);
+          }
+        </script>
+
       </body>
     </html>
     """
