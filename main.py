@@ -37,6 +37,10 @@ app = FastAPI(title="Bladnir Tech Demo")
 from services.kroger_retail_pack import router as kroger_router
 app.include_router(kroger_router)
 
+from services.demo_hub import router as demo_router
+app.include_router(demo_router)
+
+
 
 # CORS (dev)
 app.add_middleware(
