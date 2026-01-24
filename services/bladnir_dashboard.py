@@ -2,6 +2,17 @@
 # API: Scenarios list (for dropdown)
 # =============================
 
+from fastapi import APIRouter, Body, Depends, HTTPException
+from datetime import datetime
+# other imports...
+
+router = APIRouter(tags=["dashboard"])
+
+DEMO_SCENARIOS = {...}
+DEMO_ROWS = []
+DEMO_BY_ID = {}
+
+
 @router.get("/dashboard/api/scenarios")
 def list_demo_scenarios():
     """
