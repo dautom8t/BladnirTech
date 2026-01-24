@@ -9,13 +9,21 @@ Adds:
 IMPORTANT (demo):
 - Automation authorizations are stored IN MEMORY (process-local).
   Good for demos. For pilots, store in DB (Postgres) with per-org scoping.
+
+DEMO MODE ADDITIONS (this version):
+- POST /dashboard/api/seed seeds in-memory demo cases
+- GET  /dashboard/api/workflows falls back to demo rows when DB is empty
+- Auto-step supports demo cases (negative workflow_id)
+- Dashboard UI has a "Seed Demo" button (no Swagger needed)
 """
 
 from __future__ import annotations
 
-from typing import Any, Dict, Optional, List, Tuple
+from typing import Any, Dict, Optional, List
+from datetime import datetime
+
 from fastapi import APIRouter, Depends, Body, HTTPException
-from fastapi.responses import HTMLResponse, JSONResponse
+from fastapi.responses import HTMLResponse
 
 from models.database import get_db
 from services import workflow as workflow_service
@@ -34,6 +42,13 @@ AUTOMATION_AUTH: Dict[str, bool] = {
     "kroger.data_entry_to_preverify_insurance": False,
     "kroger.preverify_to_access_granted": False,
 }
+
+# -----------------------------
+# Demo cases (in-memory)
+# -----------------------------
+# Use NEGATIVE ids so they never collide with real DB workflow ids.
+DEMO_ROWS: List[dict] = []
+DEMO_BY_ID: Dict[int, dict] = {}
 
 # -----------------------------
 # Helpers: derive queue/status
@@ -69,6 +84,70 @@ def _safe_name(wf_read: dict) -> str:
     return wf_read.get("name") or f"Workflow #{wf_read.get('id')}"
 
 # -----------------------------
+# API: Demo seed
+# -----------------------------
+
+@router.post("/dashboard/api/seed")
+def seed_demo_cases():
+    """
+    Seeds demo cases into in-memory structures. Safe to call multiple times.
+    """
+    global DEMO_ROWS, DEMO_BY_ID
+
+    if DEMO_ROWS:
+        return {"ok": True, "count": len(DEMO_ROWS), "note": "already seeded"}
+
+    now = datetime.utcnow().isoformat() + "Z"
+
+    demo = [
+        {
+            # negative id => demo
+            "id": -1001,
+            "name": "Kroger • RX-1001 (Demo)",
+            "state": "CONTACT_MANAGER",
+            "queue": "contact_manager",
+            "insurance": "—",
+            "tasks": 1,
+            "events": 2,
+            "is_kroger": True,
+            "raw": {
+                "id": -1001,
+                "name": "Kroger • RX-1001 (Demo)",
+                "state": "CONTACT_MANAGER",
+                "tasks": [{"name": "Call prescriber to confirm dosage", "assigned_to": "—", "state": "open"}],
+                "events": [
+                    {"event_type": "refill_request_initiated", "payload": {"queue": "contact_manager"}, "ts": now},
+                    {"event_type": "contact_event_created", "payload": {"queue": "contact_manager"}, "ts": now},
+                ],
+            },
+        },
+        {
+            "id": -1002,
+            "name": "Kroger • RX-1002 (Demo)",
+            "state": "DATA_ENTRY",
+            "queue": "data_entry",
+            "insurance": "AutoPayer: pending",
+            "tasks": 1,
+            "events": 2,
+            "is_kroger": True,
+            "raw": {
+                "id": -1002,
+                "name": "Kroger • RX-1002 (Demo)",
+                "state": "DATA_ENTRY",
+                "tasks": [{"name": "Enter NPI + patient DOB", "assigned_to": "—", "state": "open"}],
+                "events": [
+                    {"event_type": "queue_changed", "payload": {"from": "contact_manager", "to": "data_entry"}, "ts": now},
+                    {"event_type": "insurance_adjudicated", "payload": {"payer": "AutoPayer", "result": "pending"}, "ts": now},
+                ],
+            },
+        },
+    ]
+
+    DEMO_ROWS = demo
+    DEMO_BY_ID = {r["id"]: r for r in demo}
+    return {"ok": True, "count": len(DEMO_ROWS)}
+
+# -----------------------------
 # API: Dashboard data
 # -----------------------------
 
@@ -92,6 +171,11 @@ def set_automation_state(
 def dashboard_list_workflows(db=Depends(get_db)):
     # Uses your workflow engine list
     wfs = workflow_service.list_workflows(db)
+
+    # If DB has nothing, show demo cases (if seeded)
+    if not wfs:
+        return {"workflows": DEMO_ROWS}
+
     wf_reads: List[dict] = [workflow_service.to_workflow_read(wf).model_dump() for wf in wfs]
 
     # For dashboard: show Kroger cases first, then others
@@ -122,7 +206,52 @@ def dashboard_list_workflows(db=Depends(get_db)):
 def _add_event(db, workflow_id: int, event_type: str, payload: Optional[dict] = None) -> None:
     workflow_service.add_event(db, workflow_id, EventCreate(event_type=event_type, payload=payload or {}))
 
+def _auto_step_demo(wf_id: int) -> dict:
+    """
+    Demo workflow stepper for negative IDs.
+    Mutates DEMO_ROWS/DEMO_BY_ID in memory.
+    """
+    row = DEMO_BY_ID.get(wf_id)
+    if not row:
+        raise HTTPException(status_code=404, detail="Demo workflow not found")
+
+    q = row["queue"]
+
+    if q == "contact_manager":
+        if not AUTOMATION_AUTH.get("kroger.prescriber_approval_to_data_entry"):
+            return {"did": "none", "reason": "not_authorized", "next": "prescriber_approval_to_data_entry"}
+        row["queue"] = "data_entry"
+        row["state"] = "DATA_ENTRY"
+        row["raw"]["events"].append({"event_type": "queue_changed", "payload": {"from": "contact_manager", "to": "data_entry"}})
+
+    elif q == "data_entry":
+        if not AUTOMATION_AUTH.get("kroger.data_entry_to_preverify_insurance"):
+            return {"did": "none", "reason": "not_authorized", "next": "data_entry_to_preverify_insurance"}
+        row["queue"] = "pre_verification"
+        row["state"] = "PRE_VERIFICATION"
+        row["insurance"] = "AutoPayer: accepted"
+        row["raw"]["events"].append({"event_type": "insurance_adjudicated", "payload": {"payer": "AutoPayer", "result": "accepted"}})
+
+    elif q == "pre_verification":
+        if not AUTOMATION_AUTH.get("kroger.preverify_to_access_granted"):
+            return {"did": "none", "reason": "not_authorized", "next": "preverify_to_access_granted"}
+        row["queue"] = "rejection_resolution"
+        row["state"] = "ACCESS_GRANTED"
+        row["raw"]["events"].append({"event_type": "pre_verification_reviewed", "payload": {"decision": "approved"}})
+
+    else:
+        return {"did": "none", "reason": f"queue_{q}_no_autostep"}
+
+    # refresh counters
+    row["events"] = len(row["raw"].get("events") or [])
+    row["tasks"] = len(row["raw"].get("tasks") or [])
+    return {"did": "ok", "workflow": row["raw"]}
+
 def _auto_step_kroger(db, wf_id: int) -> dict:
+    # DEMO workflows are negative ids
+    if wf_id < 0:
+        return _auto_step_demo(wf_id)
+
     wf = workflow_service.get_workflow(db, wf_id)
     if not wf:
         raise HTTPException(status_code=404, detail="Workflow not found")
@@ -237,7 +366,10 @@ def dashboard_ui():
           <b style="font-size:14px">Queues</b>
           <div class="muted">Click a case card to inspect • Use auto-step after authorization</div>
         </div>
-        <button class="small" onclick="refreshAll()">Refresh</button>
+        <div class="row">
+          <button class="small" onclick="seedDemo()">Seed Demo</button>
+          <button class="small" onclick="refreshAll()">Refresh</button>
+        </div>
       </div>
       <div style="height:10px"></div>
       <input id="search" placeholder="Search cases by name/queue…" oninput="renderBoard()" />
@@ -425,11 +557,18 @@ def dashboard_ui():
   async function autoStep(){
     if(!selected) return alert("Select a case first.");
     setStatus("Auto-stepping…");
-    const res = await api("/dashboard/api/auto-step", {
+    await api("/dashboard/api/auto-step", {
       method:"POST",
       headers: {"Content-Type":"application/json"},
       body: JSON.stringify({ workflow_id: selected.id })
     });
+    await refreshAll();
+    setStatus("Ready");
+  }
+
+  async function seedDemo(){
+    setStatus("Seeding demo cases…");
+    await api("/dashboard/api/seed", { method:"POST" });
     await refreshAll();
     setStatus("Ready");
   }
