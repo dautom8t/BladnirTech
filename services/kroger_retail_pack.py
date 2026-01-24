@@ -526,12 +526,101 @@ def kroger_demo_ui():
     render(wf);
   }
 
-  function render(wf){
-    document.getElementById("out").textContent = pretty(wf);
-    document.getElementById("state").textContent = wf.state;
-    document.getElementById("meta").textContent =
-      `#${wf.id} • ${wf.name} • tasks=${(wf.tasks||[]).length} • events=${(wf.events||[]).length}`;
+  function toggleJson(){
+  const el = document.getElementById("out");
+  el.style.display = (el.style.display === "none") ? "block" : "none";
+}
+
+function findLatestEvent(wf, type){
+  const evs = (wf.events || []).filter(e => e.event_type === type);
+  return evs.length ? evs[evs.length - 1] : null;
+}
+
+function getCurrentQueue(wf){
+  const ev = findLatestEvent(wf, "queue_changed");
+  if (ev && ev.payload && ev.payload.to) return ev.payload.to;
+
+  const seed =
+    findLatestEvent(wf, "refill_request_initiated") ||
+    findLatestEvent(wf, "contact_event_created");
+
+  if (seed && seed.payload && seed.payload.queue) return seed.payload.queue;
+
+  return "—";
+}
+
+function getInsuranceStatus(wf){
+  const ev = findLatestEvent(wf, "insurance_adjudicated");
+  if (!ev) return "—";
+
+  const payer = ev.payload?.payer || "payer";
+  const result = ev.payload?.result || "unknown";
+  return `${payer}: ${result}`;
+}
+
+function render(wf){
+
+  // Keep JSON available for debugging (hidden by default)
+  document.getElementById("out").textContent = pretty(wf);
+
+  // Top meta info
+  document.getElementById("state").textContent = wf.state;
+  document.getElementById("meta").textContent =
+    `#${wf.id} • ${wf.name}`;
+
+  // Queue + Insurance cards
+  document.getElementById("queue").textContent = getCurrentQueue(wf);
+  document.getElementById("insurance").textContent = getInsuranceStatus(wf);
+  document.getElementById("statusText").textContent = wf.state;
+
+  // ------------------------
+  // Render Tasks
+  // ------------------------
+  const tasks = wf.tasks || [];
+  document.getElementById("taskCount").textContent = String(tasks.length);
+
+  const tasksEl = document.getElementById("tasks");
+  tasksEl.innerHTML = "";
+
+  if (!tasks.length){
+    tasksEl.innerHTML = `<div class="smallmuted">No tasks yet.</div>`;
   }
+
+  tasks.forEach(t => {
+    const div = document.createElement("div");
+    div.className = "item";
+    div.innerHTML = `
+      <b>${t.name}</b>
+      <div class="kv">Assigned: ${t.assigned_to || "—"}</div>
+      <div class="kv">State: ${t.state}</div>
+    `;
+    tasksEl.appendChild(div);
+  });
+
+  // ------------------------
+  // Render Event Timeline
+  // ------------------------
+  const events = (wf.events || []).slice().reverse();
+  document.getElementById("eventCount").textContent = String(events.length);
+
+  const evEl = document.getElementById("events");
+  evEl.innerHTML = "";
+
+  if (!events.length){
+    evEl.innerHTML = `<div class="smallmuted">No events yet.</div>`;
+  }
+
+  events.forEach(e => {
+    const div = document.createElement("div");
+    div.className = "item";
+    div.innerHTML = `
+      <b>${e.event_type}</b>
+      <div class="smallmuted">${JSON.stringify(e.payload || {})}</div>
+    `;
+    evEl.appendChild(div);
+  });
+}
+
 
   async function prescriberApprove(){
     if (!selectedWorkflowId) return alert("Start a case first.");
