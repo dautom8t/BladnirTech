@@ -5,6 +5,8 @@
 from fastapi import APIRouter, Body, Depends, HTTPException
 from datetime import datetime
 from models.database import get_db
+# ...
+db = Depends(get_db)
 
 router = APIRouter(tags=["dashboard"])
 
