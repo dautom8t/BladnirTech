@@ -393,16 +393,67 @@ def kroger_demo_ui():
   </div>
 
   <div class="pane">
-    <div class="card">
-      <div class="sectionTitle">
-        <b>Workflow JSON</b>
-        <span class="badge" id="state">—</span>
-      </div>
-      <div class="muted" id="meta" style="margin-top:6px;">No workflow selected.</div>
-      <div style="height:10px"></div>
-      <pre id="out">{}</pre>
+  <div class="card">
+    <div class="sectionTitle">
+      <b>Live Workflow View</b>
+      <span class="badge" id="state">—</span>
     </div>
+
+    <div class="muted" id="meta" style="margin-top:6px;">
+      No workflow selected.
+    </div>
+
+    <div style="height:14px"></div>
+
+    <div class="row" style="gap:12px">
+      <div style="flex:1" class="card">
+        <b>Current Queue</b>
+        <div id="queue" class="muted" style="margin-top:6px">—</div>
+      </div>
+
+      <div style="flex:1" class="card">
+        <b>Insurance</b>
+        <div id="insurance" class="muted" style="margin-top:6px">—</div>
+      </div>
+
+      <div style="flex:1" class="card">
+        <b>Status</b>
+        <div id="statusText" class="muted" style="margin-top:6px">—</div>
+      </div>
+    </div>
+
+    <div style="height:14px"></div>
+
+    <div class="row" style="gap:12px; align-items:flex-start">
+      <div style="flex:1">
+        <div class="sectionTitle">
+          <b>Tasks</b>
+          <span class="badge" id="taskCount">0</span>
+        </div>
+        <div id="tasks" style="margin-top:10px"></div>
+      </div>
+
+      <div style="flex:1">
+        <div class="sectionTitle">
+          <b>Event Timeline</b>
+          <span class="badge" id="eventCount">0</span>
+        </div>
+        <div id="events" style="margin-top:10px"></div>
+      </div>
+    </div>
+
+    <div style="height:14px"></div>
+
+    <button class="secondary" onclick="toggleJson()">
+      Advanced: Toggle JSON
+    </button>
+
+    <pre id="out"
+         style="display:none;margin-top:12px;background:#0b0b0b;color:#c6ff9a;
+                padding:12px;border-radius:10px;overflow:auto">{}</pre>
   </div>
+</div>
+
 </main>
 
 <script>
