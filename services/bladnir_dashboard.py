@@ -13,6 +13,29 @@ from models.schemas import EventCreate
 
 router = APIRouter(tags=["dashboard"])
 
+from typing import Dict
+
+# -------------------------
+# Authorized Automation (in-memory demo store)
+# -------------------------
+AUTH: Dict[str, bool] = {
+    "kroger.prescriber_approval_to_data_entry": False,
+    "kroger.data_entry_to_preverify_insurance": False,
+    "kroger.preverify_to_access_granted": False,
+}
+
+@router.get("/dashboard/api/automation")
+def dashboard_get_automation():
+    return {"authorizations": AUTH}
+
+@router.post("/dashboard/api/automation")
+def dashboard_set_automation(
+    transition_key: str = Body(..., embed=True),
+    enabled: bool = Body(..., embed=True),
+):
+    AUTH[transition_key] = bool(enabled)
+    return {"authorizations": AUTH}
+
 DEMO_SCENARIOS = {
     "happy_path": {
         "label": "Happy Path",
@@ -228,6 +251,71 @@ def simulate_repetition(
 
     wf2 = workflow_service.get_workflow(db, workflow_id)
     return {"ok": True, "did": cycles, "workflow": workflow_service.to_workflow_read(wf2).model_dump()}
+
+@router.post("/dashboard/api/auto-step")
+def dashboard_auto_step(
+    workflow_id: int = Body(..., embed=True),
+    db=Depends(get_db),
+):
+    """
+    Governed auto-step for demo + DB workflows.
+    Uses AUTH toggles as human-permission gates.
+    """
+
+    def _gate(key: str):
+        if not AUTH.get(key, False):
+            raise HTTPException(status_code=403, detail=f"Automation not authorized: {key}")
+
+    def _next_queue(cur: str) -> str:
+        # Your board columns:
+        # contact_manager, data_entry, pre_verification, rejection_resolution
+        if cur == "contact_manager":
+            _gate("kroger.prescriber_approval_to_data_entry")
+            return "data_entry"
+        if cur == "data_entry":
+            _gate("kroger.data_entry_to_preverify_insurance")
+            return "pre_verification"
+        if cur == "pre_verification":
+            _gate("kroger.preverify_to_access_granted")
+            return "rejection_resolution"  # treat as "cleared" bucket for now
+        return cur
+
+    # ----------------
+    # DEMO case (negative IDs)
+    # ----------------
+    if workflow_id < 0:
+        row = DEMO_BY_ID.get(workflow_id)
+        if not row:
+            raise HTTPException(status_code=404, detail="Demo workflow not found")
+
+        cur = row.get("queue") or "data_entry"
+        nxt = _next_queue(cur)
+
+        if nxt == cur:
+            return {"ok": True, "note": f"No rule for queue '{cur}'", "queue": cur}
+
+        row["raw"]["events"].append({"event_type": "auto_step", "payload": {"from": cur, "to": nxt}})
+        row["raw"]["events"].append({"event_type": "queue_changed", "payload": {"from": cur, "to": nxt}})
+        row["queue"] = nxt
+        row["events"] = len(row["raw"].get("events") or [])
+        return {"ok": True, "from": cur, "to": nxt}
+
+    # ----------------
+    # DB workflow (positive IDs): append events only (pilot-safe)
+    # ----------------
+    wf = workflow_service.get_workflow(db, workflow_id)
+    if not wf:
+        raise HTTPException(status_code=404, detail="Workflow not found")
+
+    # Without a stored queue field in DB, treat it as "data_entry" for demo.
+    cur = "data_entry"
+    nxt = _next_queue(cur)
+
+    workflow_service.add_event(db, workflow_id, EventCreate(event_type="auto_step", payload={"from": cur, "to": nxt}))
+    workflow_service.add_event(db, workflow_id, EventCreate(event_type="queue_changed", payload={"from": cur, "to": nxt}))
+
+    wf2 = workflow_service.get_workflow(db, workflow_id)
+    return {"ok": True, "workflow": workflow_service.to_workflow_read(wf2).model_dump(), "from": cur, "to": nxt}
 
 # =============================
 # UI: /dashboard (UPDATED)
@@ -544,7 +632,7 @@ def dashboard_ui():
 
   async function saveAuth(key, enabled){
     setStatus("Saving authorization…");
-    const res = await api("/api/automation", {
+    const res = await api("/dashboard/api/automation", {
       method:"POST",
       headers: {"Content-Type":"application/json"},
       body: JSON.stringify({ transition_key: key, enabled })
@@ -556,7 +644,7 @@ def dashboard_ui():
   async function autoStep(){
     if(!selected) return alert("Select a case first.");
     setStatus("Auto-stepping…");
-    await api("/api/auto-step", {
+    await api("/dashboard/api/auto-step", {
       method:"POST",
       headers: {"Content-Type":"application/json"},
       body: JSON.stringify({ workflow_id: selected.id })
@@ -568,7 +656,7 @@ def dashboard_ui():
   async function simulateOnce(){
     if(!selected) return;
     const repeat_tasks = document.getElementById("repeatTasks").checked;
-    await api("/api/simulate", {
+    await api("/dashboard/api/simulate", {
       method:"POST",
       headers: {"Content-Type":"application/json"},
       body: JSON.stringify({ workflow_id: selected.id, cycles: 1, repeat_tasks })
@@ -609,10 +697,13 @@ def dashboard_ui():
 
   async function refreshAll(){
     setStatus("Loading…");
-    const d1 = await api("/api/workflows");
-    const d2 = await api("/api/automation");
-    ALL = Array.isArray(d1) ? d1 : (d1.workflows || []);
-    AUTH = d2.authorizations || {};
+    - const d1 = await api("/api/workflows");
+- const d2 = await api("/api/automation");
+- ALL = Array.isArray(d1) ? d1 : (d1.workflows || []);
++ const d1 = await api("/dashboard/api/workflows");
++ const d2 = await api("/dashboard/api/automation");
++ ALL = d1.workflows || [];
+
     renderBoard();
 
     if(selected){
