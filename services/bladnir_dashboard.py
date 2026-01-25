@@ -611,7 +611,7 @@ def dashboard_ui():
     setStatus("Loading…");
     const d1 = await api("/api/workflows");
     const d2 = await api("/api/automation");
-    ALL = d1.workflows || [];
+    ALL = Array.isArray(d1) ? d1 : (d1.workflows || []);
     AUTH = d2.authorizations || {};
     renderBoard();
 
