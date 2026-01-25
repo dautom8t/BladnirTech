@@ -97,6 +97,7 @@ def _demo_repeat_tasks(row: dict, copies: int = 1):
             "assigned_to": template.get("assigned_to", "—"),
             "state": template.get("state", "open"),
         })
+
 @router.post("/dashboard/api/seed")
 def seed_demo_cases(
     scenario_id: str = Body("happy_path", embed=True),
@@ -148,6 +149,7 @@ def seed_demo_cases(
     else:
         row = _mk_case(scenario_id, 1)
         return {"ok": True, "count": 1, "id": row["id"]}
+
 @router.post("/dashboard/api/simulate")
 def simulate_repetition(
     workflow_id: int = Body(..., embed=True),
