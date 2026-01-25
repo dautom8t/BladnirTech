@@ -544,7 +544,7 @@ def dashboard_ui():
 
   async function saveAuth(key, enabled){
     setStatus("Saving authorization…");
-    const res = await api("/dashboard/api/automation", {
+    const res = await api("/api/automation", {
       method:"POST",
       headers: {"Content-Type":"application/json"},
       body: JSON.stringify({ transition_key: key, enabled })
@@ -556,7 +556,7 @@ def dashboard_ui():
   async function autoStep(){
     if(!selected) return alert("Select a case first.");
     setStatus("Auto-stepping…");
-    await api("/dashboard/api/auto-step", {
+    await api("/api/auto-step", {
       method:"POST",
       headers: {"Content-Type":"application/json"},
       body: JSON.stringify({ workflow_id: selected.id })
@@ -568,7 +568,7 @@ def dashboard_ui():
   async function simulateOnce(){
     if(!selected) return;
     const repeat_tasks = document.getElementById("repeatTasks").checked;
-    await api("/dashboard/api/simulate", {
+    await api("/api/simulate", {
       method:"POST",
       headers: {"Content-Type":"application/json"},
       body: JSON.stringify({ workflow_id: selected.id, cycles: 1, repeat_tasks })
