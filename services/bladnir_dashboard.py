@@ -3,9 +3,12 @@
 # =============================
 
 from fastapi import APIRouter, Body, Depends, HTTPException
+from fastapi.responses import HTMLResponse
 from datetime import datetime
+
 from models.database import get_db
-# ...
+from services import workflow as workflow_service
+from models.schemas import EventCreate
 
 
 router = APIRouter(tags=["dashboard"])
@@ -61,7 +64,8 @@ DEMO_SCENARIOS = {
         },
     },
 }
-
+DEMO_ROWS = []
+DEMO_BY_ID = {}
 
 @router.get("/dashboard/api/scenarios")
 def list_demo_scenarios():
@@ -526,7 +530,7 @@ def dashboard_ui():
     const d1 = await api("/dashboard/api/workflows");
     const d2 = await api("/dashboard/api/automation");
     ALL = d1.workflows || [];
-    AUTH = d2.authorizations || [];
+    AUTH = d2.authorizations || {};
     renderBoard();
 
     if(selected){
