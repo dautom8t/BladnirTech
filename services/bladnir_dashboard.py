@@ -151,6 +151,35 @@ def seed_demo_cases(
         row = _mk_case(scenario_id, 1)
         return {"ok": True, "count": 1, "id": row["id"]}
 
+@router.get("/dashboard/api/workflows")
+def dashboard_list_workflows(db=Depends(get_db)):
+    rows = []
+
+    # 1) DB workflows (if any)
+    try:
+        wfs = workflow_service.list_workflows(db)
+        for wf in wfs:
+            wf_read = workflow_service.to_workflow_read(wf).model_dump()
+            rows.append({
+                "id": wf_read["id"],
+                "name": wf_read.get("name") or f"Workflow #{wf_read['id']}",
+                "state": wf_read.get("state", "unknown"),
+                "queue": "data_entry",  # replace with your real queue derivation if you have it
+                "insurance": "—",
+                "tasks": len(wf_read.get("tasks") or []),
+                "events": len(wf_read.get("events") or []),
+                "is_kroger": "kroger" in (wf_read.get("name","").lower()),
+                "raw": wf_read,
+            })
+    except Exception:
+        # keep dashboard working even if DB list fails
+        pass
+
+    # 2) Demo workflows (seeded)
+    rows.extend(DEMO_ROWS)
+
+    return {"workflows": rows}
+
 @router.post("/dashboard/api/simulate")
 def simulate_repetition(
     workflow_id: int = Body(..., embed=True),
