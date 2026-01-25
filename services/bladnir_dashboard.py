@@ -126,67 +126,48 @@ def seed_demo_cases(
     scenario_id: str = Body("happy_path", embed=True),
     seed_all: bool = Body(False, embed=True),
 ):
-
     global DEMO_ROWS, DEMO_BY_ID
 
     def _mk_case(sid: str, idx: int):
         s = DEMO_SCENARIOS.get(sid, DEMO_SCENARIOS["happy_path"])
         demo_id = -(len(DEMO_ROWS) + 1)
 
-        # IMPORTANT: must be a queue your UI renders right now.
-        # If you haven't added inbound/dispensing/verification columns yet,
-        # keep it in contact_manager/data_entry/pre_verification/rejection_resolution.
-        # Seed scenarios into different queues so all dashboard columns populate
+        queue_map = {
+            "happy_path": "contact_manager",
+            "prior_auth_required": "inbound_comms",
+            "no_refills_prescriber": "data_entry",
+            "no_insurance_discount_card": "pre_verification",
+            "insurance_rejected_outdated": "dispensing",
+        }
+        start_queue = queue_map.get(sid, "data_entry")
 
-queue_map = {
-    # Outbound refill request created
-    "happy_path": "contact_manager",
+        raw = {
+            "id": demo_id,
+            "name": f"Kroger • RX-{1000 + idx} (Demo)",
+            "state": "INBOUND",
+            "tasks": [{"name": "Enter NPI + patient DOB", "assigned_to": "—", "state": "open"}],
+            "events": [
+                {"event_type": "case_seeded", "payload": {"scenario_id": sid, "label": s.get("label")}},
+                {"event_type": "queue_changed", "payload": {"from": "none", "to": start_queue}},
+                {"event_type": "insurance_adjudicated", "payload": {"payer": "AutoPayer", "result": s.get("insurance_result", "accepted")}},
+            ],
+        }
 
-    # Provider office response arrives (inbound)
-    "prior_auth_required": "inbound_comms",
+        row = {
+            "id": demo_id,
+            "name": raw["name"],
+            "state": raw["state"],
+            "queue": start_queue,
+            "insurance": f"AutoPayer: {s.get('insurance_result','accepted')}",
+            "tasks": len(raw["tasks"]),
+            "events": len(raw["events"]),
+            "is_kroger": True,
+            "raw": raw,
+        }
 
-    # Intake + typing stage
-    "no_refills_prescriber": "data_entry",
-
-    # Insurance + pharmacist checks
-    "no_insurance_discount_card": "pre_verification",
-
-    # Later-stage dispensing work
-    "insurance_rejected_outdated": "dispensing",
-}
-
-start_queue = queue_map.get(sid, "data_entry")
-
-
-raw = {
-    "id": demo_id,
-    "name": f"Kroger • RX-{1000 + idx} (Demo)",
-    "state": "INBOUND",
-    "tasks": [{"name": "Enter NPI + patient DOB", "assigned_to": "—", "state": "open"}],
-    "events": [
-        {"event_type": "case_seeded", "payload": {"scenario_id": sid, "label": s.get("label")}},
-        {"event_type": "queue_changed", "payload": {"from": "none", "to": start_queue}},
-        {"event_type": "insurance_adjudicated", "payload": {"payer": "AutoPayer", "result": s.get("insurance_result", "accepted")}},
-    ],
-}
-
-row = {
-    "id": demo_id,
-    "name": raw["name"],
-    "state": raw["state"],
-    "queue": start_queue,
-    "insurance": f"AutoPayer: {s.get('insurance_result','accepted')}",
-    "tasks": len(raw["tasks"]),
-    "events": len(raw["events"]),
-    "is_kroger": True,
-    "raw": raw,
-}
-
-
-DEMO_ROWS.append(row)
-DEMO_BY_ID[demo_id] = row
-return row
-
+        DEMO_ROWS.append(row)
+        DEMO_BY_ID[demo_id] = row
+        return row
 
     if seed_all:
         for i, sid in enumerate(DEMO_SCENARIOS.keys(), start=1):
@@ -195,6 +176,7 @@ return row
     else:
         row = _mk_case(scenario_id, 1)
         return {"ok": True, "count": 1, "id": row["id"]}
+
 
 @router.get("/dashboard/api/workflows")
 def dashboard_list_workflows(db=Depends(get_db)):
