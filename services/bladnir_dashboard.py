@@ -159,28 +159,29 @@ start_queue = queue_map.get(sid, "data_entry")
 
 
 raw = {
-            "id": demo_id,
-            "name": f"Kroger • RX-{1000 + idx} (Demo)",
-            "state": "INBOUND",
-            "tasks": [{"name": "Enter NPI + patient DOB", "assigned_to": "—", "state": "open"}],
-            "events": [
-                {"event_type": "case_seeded", "payload": {"scenario_id": sid, "label": s.get("label")}},
-                {"event_type": "queue_changed", "payload": {"from": "none", "to": start_queue}},
-                {"event_type": "insurance_adjudicated", "payload": {"payer": "AutoPayer", "result": s.get("insurance_result", "accepted")}},
-            ],
-        }
+    "id": demo_id,
+    "name": f"Kroger • RX-{1000 + idx} (Demo)",
+    "state": "INBOUND",
+    "tasks": [{"name": "Enter NPI + patient DOB", "assigned_to": "—", "state": "open"}],
+    "events": [
+        {"event_type": "case_seeded", "payload": {"scenario_id": sid, "label": s.get("label")}},
+        {"event_type": "queue_changed", "payload": {"from": "none", "to": start_queue}},
+        {"event_type": "insurance_adjudicated", "payload": {"payer": "AutoPayer", "result": s.get("insurance_result", "accepted")}},
+    ],
+}
 
-    row = {
-            "id": demo_id,
-            "name": raw["name"],
-            "state": raw["state"],
-            "queue": start_queue,
-            "insurance": f"AutoPayer: {s.get('insurance_result','accepted')}",
-            "tasks": len(raw["tasks"]),
-            "events": len(raw["events"]),
-            "is_kroger": True,
-            "raw": raw,
-        }
+row = {
+    "id": demo_id,
+    "name": raw["name"],
+    "state": raw["state"],
+    "queue": start_queue,
+    "insurance": f"AutoPayer: {s.get('insurance_result','accepted')}",
+    "tasks": len(raw["tasks"]),
+    "events": len(raw["events"]),
+    "is_kroger": True,
+    "raw": raw,
+}
+
 
         DEMO_ROWS.append(row)
         DEMO_BY_ID[demo_id] = row
