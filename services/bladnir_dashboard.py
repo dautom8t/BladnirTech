@@ -609,8 +609,8 @@ def dashboard_ui():
 
   async function refreshAll(){
     setStatus("Loading…");
-    const d1 = await api("/dashboard/api/workflows");
-    const d2 = await api("/dashboard/api/automation");
+    const d1 = await api("/api/workflows");
+    const d2 = await api("/api/automation");
     ALL = d1.workflows || [];
     AUTH = d2.authorizations || {};
     renderBoard();
