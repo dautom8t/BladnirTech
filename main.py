@@ -26,6 +26,8 @@ from models.schemas import (
 from services import rules as rules_service
 from services import workflow as workflow_service
 
+from enterprise.execute import router as enterprise_router
+
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
 
@@ -42,6 +44,9 @@ app.include_router(demo_router)
 
 from services.bladnir_dashboard import router as dashboard_router
 app.include_router(dashboard_router)
+
+app.include_router(enterprise_router)
+
 
 
 # CORS (dev)
