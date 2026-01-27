@@ -1,5 +1,7 @@
+import os
 from fastapi import Header, HTTPException, Depends
 from dataclasses import dataclass
+
 
 @dataclass
 class UserContext:
@@ -7,10 +9,9 @@ class UserContext:
     role: str
 
 
+# ✅ Keys loaded securely from Render Environment Variables
 ENTERPRISE_KEYS = {
-    "demo-admin-key": "admin",
-    "demo-operator-key": "operator",
-    "demo-auditor-key": "auditor",
+    os.getenv("BLADNIR_ADMIN_KEY"): "admin",
 }
 
 
@@ -23,15 +24,3 @@ def require_auth(x_api_key: str = Header(None)) -> UserContext:
 
     role = ENTERPRISE_KEYS[x_api_key]
     return UserContext(api_key=x_api_key, role=role)
-
-
-
-def require_role(required: str):
-    def checker(user: UserContext = Depends(require_auth)):
-        if user.role != required:
-            raise HTTPException(
-                status_code=403,
-                detail=f"Requires role: {required}"
-            )
-        return user
-    return checker
