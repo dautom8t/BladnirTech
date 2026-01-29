@@ -982,10 +982,18 @@ async function refreshAuthModal(){
       <div class="muted" style="margin-top:6px">type: ${a.type} • confidence: ${conf} • safety: ${safe}</div>
       <div class="muted" style="margin-top:6px">payload: ${payloadStr}</div>
       <div style="height:10px"></div>
-      <button class="small" onclick="window.createProposalEncoded('${encoded}')">Create Proposal</button>
+      <button class="small js-create-proposal" data-encoded="${encoded}">Create Proposal</button>
     </div>
   `;
    }).join("");
+
+   sugEl.querySelectorAll(".js-create-proposal").forEach(btn => {
+  btn.onclick = () => {
+    const encoded = btn.getAttribute("data-encoded") || "";
+    const a = JSON.parse(decodeURIComponent(encoded));
+    createProposal(a);
+  };
+});
 }
 
    
