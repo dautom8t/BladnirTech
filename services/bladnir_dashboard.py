@@ -9,6 +9,7 @@ from typing import Dict, Any, List
 import uuid
 import logging
 log = logging.getLogger("uvicorn.error")
+from enterprise import governance
 
 
 from models.database import get_db
@@ -252,6 +253,23 @@ def decide_proposal(
         raise HTTPException(status_code=400, detail="decision must be approve|reject")
 
     p["status"] = "approved" if decision == "approve" else "rejected"
+    if decision == "approve":
+    # build the gate key for this action
+    action = proposal.get("action", {})  # adjust to your structure
+    action_type = action.get("type") or action.get("action_type")
+    payload = action.get("payload", {}) or {}
+
+    # IMPORTANT: you need a to_queue. If your system knows the next queue,
+    # pass it. If you already put it in payload, even better.
+    # If you don’t yet have to_queue, do the small tweak below in step 3.
+    key = governance.gate_key_from_action(
+        tenant="kroger",
+        action_type=action_type,
+        payload=payload,
+    )
+    if key:
+        governance.authorize_gate(key, actor="human", note="Approved proposal")
+
     p["decided_at"] = _now_iso()
     p["decided_by"] = decided_by
     p["decision_note"] = note
