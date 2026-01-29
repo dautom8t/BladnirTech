@@ -887,6 +887,11 @@ async function refreshAll(){
     if(wf) renderDetails(wf);
   }
 
+  if(authOpen){
+  refreshAuthModal().catch(()=>{});
+}
+
+  
   setStatus("Ready");
 }
 // -------------------------
