@@ -27,6 +27,33 @@ AUTH: Dict[str, bool] = {
     "kroger.preverify_to_access_granted": False,
 }
 
+def _gate(key: str):
+    if not AUTH.get(key, False):
+        raise HTTPException(status_code=403, detail=f"Automation not authorized: {key}")
+
+def _next_queue(cur: str) -> str:
+    if cur == "contact_manager":
+        _gate("kroger.prescriber_approval_to_data_entry")
+        return "inbound_comms"
+
+    if cur == "inbound_comms":
+        _gate("kroger.prescriber_approval_to_data_entry")
+        return "data_entry"
+
+    if cur == "data_entry":
+        _gate("kroger.data_entry_to_preverify_insurance")
+        return "pre_verification"
+
+    if cur == "pre_verification":
+        _gate("kroger.preverify_to_access_granted")
+        return "dispensing"
+
+    if cur == "dispensing":
+        _gate("kroger.preverify_to_access_granted")
+        return "verification"
+
+    return cur
+
 @router.get("/dashboard/api/automation")
 def dashboard_get_automation():
     return {"authorizations": AUTH}
@@ -270,7 +297,12 @@ def seed_demo_cases(
     scenario_id: str = Body("happy_path", embed=True),
     seed_all: bool = Body(False, embed=True),
 ):
-    global DEMO_ROWS, DEMO_BY_ID
+    global DEMO_ROWS, DEMO_BY_ID, DEMO_PROPOSALS, DEMO_PROPOSAL_BY_ID
+    DEMO_ROWS = []
+    DEMO_BY_ID = {}
+    DEMO_PROPOSALS = []
+    DEMO_PROPOSAL_BY_ID = {}
+
 
     def _mk_case(sid: str, idx: int):
         s = DEMO_SCENARIOS.get(sid, DEMO_SCENARIOS["happy_path"])
@@ -410,34 +442,6 @@ def dashboard_auto_step(
     Uses AUTH toggles as human-permission gates.
     """
 
-    def _gate(key: str):
-        if not AUTH.get(key, False):
-            raise HTTPException(status_code=403, detail=f"Automation not authorized: {key}")
-
-    def _next_queue(cur: str) -> str:
-        if cur == "contact_manager":
-            _gate("kroger.prescriber_approval_to_data_entry")
-            return "inbound_comms"
-
-        if cur == "inbound_comms":
-            _gate("kroger.prescriber_approval_to_data_entry")
-            return "data_entry"
-
-        if cur == "data_entry":
-            _gate("kroger.data_entry_to_preverify_insurance")
-            return "pre_verification"
-
-        if cur == "pre_verification":
-            _gate("kroger.preverify_to_access_granted")
-            return "dispensing"
-
-        if cur == "dispensing":
-            _gate("kroger.preverify_to_access_granted")
-            return "verification"
-
-        return cur
-
-
     # ----------------
     # DEMO case (negative IDs)
     # ----------------
@@ -465,7 +469,6 @@ def dashboard_auto_step(
     if not wf:
         raise HTTPException(status_code=404, detail="Workflow not found")
 
-    # Without a stored queue field in DB, treat it as "data_entry" for demo.
     cur = "data_entry"
     nxt = _next_queue(cur)
 
@@ -474,6 +477,10 @@ def dashboard_auto_step(
 
     wf2 = workflow_service.get_workflow(db, workflow_id)
     return {"ok": True, "workflow": workflow_service.to_workflow_read(wf2).model_dump(), "from": cur, "to": nxt}
+
+
+
+
 
 # =============================
 # UI: /dashboard (UPDATED)
