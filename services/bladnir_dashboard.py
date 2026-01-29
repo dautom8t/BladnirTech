@@ -243,32 +243,32 @@ def decide_proposal(
     decided_by: str = Body("human", embed=True),
     note: str = Body("", embed=True),
 ):
-    p = DEMO_PROPOSAL_BY_ID.get(proposal_id)
+    p = DEMO_PROPOSALS_BY_ID.get(proposal_id)
     if not p:
         raise HTTPException(status_code=404, detail="Proposal not found")
     if p["status"] != "pending":
         raise HTTPException(status_code=409, detail=f"Proposal already {p['status']}")
-
     if decision not in ("approve", "reject"):
         raise HTTPException(status_code=400, detail="decision must be approve|reject")
 
-    p["status"] = "approved" if decision == "approve" else "rejected"
     if decision == "approve":
-    # build the gate key for this action
-    action = proposal.get("action", {})  # adjust to your structure
-    action_type = action.get("type") or action.get("action_type")
-    payload = action.get("payload", {}) or {}
+        p["status"] = "approved"
 
-    # IMPORTANT: you need a to_queue. If your system knows the next queue,
-    # pass it. If you already put it in payload, even better.
-    # If you don’t yet have to_queue, do the small tweak below in step 3.
-    key = governance.gate_key_from_action(
-        tenant="kroger",
-        action_type=action_type,
-        payload=payload,
-    )
-    if key:
-        governance.authorize_gate(key, actor="human", note="Approved proposal")
+        # ✅ GOVERNANCE AUTH
+        action = p.get("action", {}) or {}
+        action_type = action.get("type") or action.get("action_type")
+        payload = action.get("payload", {}) or {}
+
+        key = governance.gate_key_from_action(
+            tenant="kroger",
+            action_type=action_type,
+            payload=payload,
+        )
+        if key:
+            governance.authorize_gate(key, actor=decided_by, note=note)
+
+    else:
+        p["status"] = "rejected"
 
     p["decided_at"] = _now_iso()
     p["decided_by"] = decided_by
