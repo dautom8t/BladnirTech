@@ -889,11 +889,11 @@ async function refreshAll(){
 
   if(authOpen){
   refreshAuthModal().catch(()=>{});
-}
+  }
 
-  
   setStatus("Ready");
 }
+
 // -------------------------
 // Proposal Modal (Authorized Automation)
 // -------------------------
