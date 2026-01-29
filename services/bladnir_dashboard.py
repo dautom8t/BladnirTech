@@ -197,30 +197,34 @@ def list_pending_proposals():
 def get_case_detail(case_id: int, db=Depends(get_db)):
     log.info(f"case_detail: case_id={case_id}")
 
-    # DEMO case
+    # ----------------
+    # DEMO case (negative IDs)
+    # ----------------
     if case_id < 0:
         row = _case_or_404(case_id)
+
         proposals = [p for p in DEMO_PROPOSALS if p["case_id"] == case_id]
         proposals.sort(key=lambda x: x["created_at"], reverse=True)
 
-queue = row.get("queue")
-suggested = []
+        queue = row.get("queue")
+        suggested = []
 
-if queue:
-    nq = next_queue_for(queue)
-    if nq:
-        suggested.append({
-            "type": "advance_queue",
-            "label": f"Advance case to next queue from '{queue}'",
-            "payload": {"from_queue": queue, "to_queue": nq},
-            "confidence": 0.86,
-            "safety_score": 0.92,
-        })
-
+        if queue:
+            nq = next_queue_for(queue)  # preview-only helper (no gating)
+            if nq:
+                suggested.append({
+                    "type": "advance_queue",
+                    "label": f"Advance case to next queue from '{queue}'",
+                    "payload": {"from_queue": queue, "to_queue": nq},
+                    "confidence": 0.86,
+                    "safety_score": 0.92,
+                })
 
         return {"case": row, "suggested_actions": suggested, "proposals": proposals}
 
-    # DB workflow
+    # ----------------
+    # DB workflow (positive IDs)
+    # ----------------
     wf = workflow_service.get_workflow(db, case_id)
     if not wf:
         raise HTTPException(status_code=404, detail="Workflow not found")
@@ -236,15 +240,19 @@ if queue:
         "raw": wf_read,
     }
 
-    suggested = [{
-        "type": "advance_queue",
-        "label": f"Advance workflow to next queue from '{queue}'",
-        "payload": {"from_queue": queue},
-        "confidence": 0.80,
-        "safety_score": 0.85,
-    }]
+    suggested = []
+    nq = next_queue_for(queue)
+    if nq:
+        suggested.append({
+            "type": "advance_queue",
+            "label": f"Advance workflow to next queue from '{queue}'",
+            "payload": {"from_queue": queue, "to_queue": nq},
+            "confidence": 0.80,
+            "safety_score": 0.85,
+        })
 
     return {"case": case_view, "suggested_actions": suggested, "proposals": []}
+
 
 @router.post("/dashboard/api/cases/{case_id}/propose")
 def propose_automation(
