@@ -649,15 +649,32 @@ def dashboard_ui():
   function setStatus(t){ document.getElementById('status').textContent = t; }
 
   async function api(path, opts={}){
-    const res = await fetch(path, opts);
-    let data = null;
-    try{ data = await res.json(); }catch(e){}
-    if(!res.ok){
-      const msg = (data && (data.detail || data.message)) ? (data.detail || data.message) : res.statusText;
-      throw new Error(msg);
-    }
-    return data;
+  const res = await fetch(path, {
+    headers: { "Content-Type":"application/json", ...(opts.headers||{}) },
+    ...opts
+  });
+
+  // Try to extract a meaningful message
+  let bodyText = "";
+  let bodyJson = null;
+  try {
+    bodyText = await res.text();
+    bodyJson = bodyText ? JSON.parse(bodyText) : null;
+  } catch (_) {
+    // ignore parse errors
   }
+
+  if(!res.ok){
+    const detail =
+      (bodyJson && (bodyJson.detail || bodyJson.message)) ||
+      bodyText ||
+      `HTTP ${res.status}`;
+    throw new Error(detail);
+  }
+
+  return bodyJson || (bodyText ? JSON.parse(bodyText) : {});
+}
+
 
   function toggleJson(){
     const el = document.getElementById("json");
