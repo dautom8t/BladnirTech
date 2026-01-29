@@ -165,7 +165,7 @@ def list_pending_proposals():
     return {"items": pending, "count": len(pending)}
 
 @router.get("/dashboard/api/cases/{case_id}")
-def get_case_detail(case_id: str):
+def get_case_detail(case_id: int):
     row = _case_or_404(case_id)
     proposals = [p for p in DEMO_PROPOSALS if p["case_id"] == case_id]
     proposals.sort(key=lambda x: x["created_at"], reverse=True)
