@@ -1004,11 +1004,11 @@ async function refreshAuthModal(){
       let buttons = "";
       if(status === "pending"){
         buttons = `
-          <button class="small" onclick="decideProposal('${p.id}','approve')">Approve</button>
-          <button class="small" onclick="decideProposal('${p.id}','reject')">Reject</button>
+          <button class="small" onclick="window.decideProposal('${p.id}','approve')">Approve</button>
+          <button class="small" onclick="window.decideProposal('${p.id}','reject')">Reject</button>
         `;
       } else if(status === "approved"){
-        buttons = `<button class="small primary" onclick="executeProposal('${p.id}')">Execute</button>`;
+        buttons = `<button class="small primary" onclick="window.executeProposal('${p.id}')">Execute</button>`;
       } else {
         buttons = `<span class="pill">status: ${status}</span>`;
       }
