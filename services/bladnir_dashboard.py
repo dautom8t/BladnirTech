@@ -861,17 +861,34 @@ def dashboard_ui():
     setStatus("Ready");
   }
 
-  async function autoStep(){
-    if(!selected) return alert("Select a case first.");
-    setStatus("Auto-stepping…");
+async function autoStep(){
+  if(!selected) return alert("Select a case first.");
+  setStatus("Auto-stepping…");
+
+  try{
     await api("/dashboard/api/auto-step", {
       method:"POST",
       headers: {"Content-Type":"application/json"},
       body: JSON.stringify({ workflow_id: selected.id })
     });
+
     await refreshAll();
     setStatus("Ready");
+  } catch(e){
+    const msg = String(e?.message || "");
+    console.error("autoStep error:", e);
+
+    // Ignore expected governance blocks
+    if(msg.includes("not authorized") || msg.includes("403")){
+      setStatus("Requires approval");
+      return;
+    }
+
+    setStatus("Error");
+    alert(`Auto-step failed: ${msg}`);
   }
+}
+
 
   async function simulateOnce(){
     if(!selected) return;
