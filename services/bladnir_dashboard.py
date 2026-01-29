@@ -982,12 +982,13 @@ async function refreshAuthModal(){
       <div class="muted" style="margin-top:6px">type: ${a.type} • confidence: ${conf} • safety: ${safe}</div>
       <div class="muted" style="margin-top:6px">payload: ${payloadStr}</div>
       <div style="height:10px"></div>
-      <button class="small" onclick="createProposalEncoded('${encoded}')">Create Proposal</button>
+      <button class="small" onclick="window.createProposalEncoded('${encoded}')">Create Proposal</button>
     </div>
   `;
    }).join("");
 }
 
+   
   // Proposals
   const props = d.proposals || [];
   const pEl = document.getElementById("authProposals");
@@ -1075,6 +1076,17 @@ async function executeProposal(pid){
     await loadScenarios();
     await refreshAll();
   })();
+
+function createProposalEncoded(encoded){
+  const a = JSON.parse(decodeURIComponent(encoded));
+  return createProposal(a);
+}
+
+window.createProposalEncoded = createProposalEncoded;
+window.createProposal = createProposal;
+window.decideProposal = decideProposal;
+window.executeProposal = executeProposal;
+  
 </script>
 <!-- =========================
      Authorized Automation Modal
