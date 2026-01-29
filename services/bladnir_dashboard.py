@@ -888,6 +888,133 @@ async function refreshAll(){
 
   setStatus("Ready");
 }
+// -------------------------
+// Proposal Modal (Authorized Automation)
+// -------------------------
+let authOpen = false;
+
+function closeAuthModal(){
+  authOpen = false;
+  document.getElementById("authModal").style.display = "none";
+}
+
+async function openAuthModal(){
+  if(!selected) return alert("Select a case first.");
+  authOpen = true;
+  document.getElementById("authModal").style.display = "block";
+  await refreshAuthModal();
+}
+
+async function refreshAuthModal(){
+  if(!selected) return;
+  const caseId = selected.id;
+
+  const d = await api(`/dashboard/api/cases/${caseId}`);
+  const c = d.case || {};
+  document.getElementById("authMeta").textContent = `Case #${c.id} • ${c.name || ""} • queue: ${c.queue}`;
+
+  // Suggested actions
+  const sug = d.suggested_actions || [];
+  const sugEl = document.getElementById("authSuggested");
+  if(!sug.length){
+    sugEl.innerHTML = `<div class="muted">No suggestions available.</div>`;
+  } else {
+    sugEl.innerHTML = sug.map(a => {
+      const conf = (a.confidence ?? 0.0).toFixed(2);
+      const safe = (a.safety_score ?? 0.0).toFixed(2);
+      const payloadStr = JSON.stringify(a.payload || {});
+      return `
+        <div class="item">
+          <b>${a.label}</b>
+          <div class="muted" style="margin-top:6px">type: ${a.type} • confidence: ${conf} • safety: ${safe}</div>
+          <div class="muted" style="margin-top:6px">payload: ${payloadStr}</div>
+          <div style="height:10px"></div>
+          <button class="small" onclick='createProposal(${JSON.stringify(a)})'>Create Proposal</button>
+        </div>
+      `;
+    }).join("");
+  }
+
+  // Proposals
+  const props = d.proposals || [];
+  const pEl = document.getElementById("authProposals");
+  if(!props.length){
+    pEl.innerHTML = `<div class="muted">No proposals yet for this case.</div>`;
+  } else {
+    pEl.innerHTML = props.map(p => {
+      const a = p.action || {};
+      const status = p.status || "unknown";
+      const audit = (p.audit || []).slice().reverse().slice(0,4);
+      const auditHtml = audit.map(x => `<div class="muted">• ${x.ts}: ${x.event}</div>`).join("");
+
+      let buttons = "";
+      if(status === "pending"){
+        buttons = `
+          <button class="small" onclick="decideProposal('${p.id}','approve')">Approve</button>
+          <button class="small" onclick="decideProposal('${p.id}','reject')">Reject</button>
+        `;
+      } else if(status === "approved"){
+        buttons = `<button class="small primary" onclick="executeProposal('${p.id}')">Execute</button>`;
+      } else {
+        buttons = `<span class="pill">status: ${status}</span>`;
+      }
+
+      return `
+        <div class="item">
+          <b>${p.id}</b> <span class="pill" style="margin-left:8px">${status}</span>
+          <div class="muted" style="margin-top:6px">${a.label || a.type || "action"}</div>
+          <div style="height:8px"></div>
+          <div class="row">${buttons}</div>
+          <div style="height:10px"></div>
+          <div class="muted"><b>Audit (latest):</b></div>
+          ${auditHtml || `<div class="muted">—</div>`}
+        </div>
+      `;
+    }).join("");
+  }
+}
+
+async function createProposal(a){
+  if(!selected) return;
+  const body = {
+    action_type: a.type,
+    label: a.label,
+    payload: a.payload || {},
+    confidence: a.confidence ?? 0.75,
+    safety_score: a.safety_score ?? 0.75,
+  };
+  await api(`/dashboard/api/cases/${selected.id}/propose`, {
+    method:"POST",
+    headers: {"Content-Type":"application/json"},
+    body: JSON.stringify(body)
+  });
+  await refreshAll();
+  await refreshAuthModal();
+}
+
+async function decideProposal(pid, decision){
+  await api(`/dashboard/api/automation/${pid}/decide`, {
+    method:"POST",
+    headers: {"Content-Type":"application/json"},
+    body: JSON.stringify({ decision, decided_by: "human", note: "" })
+  });
+  await refreshAll();
+  await refreshAuthModal();
+}
+
+async function executeProposal(pid){
+  try{
+    await api(`/dashboard/api/automation/${pid}/execute`, {
+      method:"POST",
+      headers: {"Content-Type":"application/json"},
+      body: JSON.stringify({ executed_by: "system" })
+    });
+  } catch(e){
+    alert(e.message);
+  }
+  await refreshAll();
+  await refreshAuthModal();
+}
 
 
   // boot
@@ -896,6 +1023,40 @@ async function refreshAll(){
     await refreshAll();
   })();
 </script>
+<!-- =========================
+     Authorized Automation Modal
+     ========================= -->
+<div id="authModal" style="display:none; position:fixed; inset:0; background:rgba(0,0,0,0.65); z-index:9999;">
+  <div style="max-width:920px; margin:5vh auto; background:#0f1622; color:#fff; border-radius:16px; border:1px solid rgba(255,255,255,0.12); padding:16px;">
+    <div style="display:flex; align-items:center; justify-content:space-between; gap:12px;">
+      <div>
+        <div style="font-weight:900; font-size:14px;">Authorized Automation — Proposal Review</div>
+        <div class="muted" id="authMeta" style="margin-top:4px;">—</div>
+      </div>
+      <div class="row">
+        <button class="small" onclick="refreshAuthModal()">Refresh</button>
+        <button class="small" onclick="closeAuthModal()">Close</button>
+      </div>
+    </div>
+
+    <div style="height:12px"></div>
+
+    <div class="split">
+      <div class="card" style="margin:0">
+        <b style="font-size:13px">Suggested Actions</b>
+        <div style="height:10px"></div>
+        <div id="authSuggested"></div>
+      </div>
+
+      <div class="card" style="margin:0">
+        <b style="font-size:13px">Proposals & Audit</b>
+        <div style="height:10px"></div>
+        <div id="authProposals"></div>
+      </div>
+    </div>
+  </div>
+</div>
+
 </body>
 </html>
     """
