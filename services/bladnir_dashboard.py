@@ -69,6 +69,18 @@ NEXT_QUEUE_PREVIEW = {
 def next_queue_for(cur: str):
     return NEXT_QUEUE_PREVIEW.get(cur)
 
+from enterprise import governance
+
+@router.get("/dashboard/api/governance/gates")
+def list_gates():
+    return {"gates": list(governance.list_gates().values())}
+
+@router.post("/dashboard/api/governance/authorize")
+def authorize(payload: dict):
+    key = payload.get("key")
+    if not key:
+        raise HTTPException(422, "Missing key")
+    return {"ok": True, "gate": governance.authorize_gate(key, actor="human", note=payload.get("note",""))}
 
 
 @router.get("/dashboard/api/automation")
