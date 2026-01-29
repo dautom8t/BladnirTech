@@ -5,6 +5,9 @@
 from fastapi import APIRouter, Body, Depends, HTTPException
 from fastapi.responses import HTMLResponse
 from datetime import datetime
+from typing import Dict, Any, List
+import uuid
+
 
 from models.database import get_db
 from services import workflow as workflow_service
@@ -89,6 +92,147 @@ DEMO_SCENARIOS = {
 }
 DEMO_ROWS = []
 DEMO_BY_ID = {}
+
+
+# =============================
+# Authorized Automation (DEMO / in-memory)
+# =============================
+
+DEMO_PROPOSALS: List[Dict[str, Any]] = []
+DEMO_PROPOSAL_BY_ID: Dict[str, Dict[str, Any]] = {}
+
+def _now_iso() -> str:
+    return datetime.utcnow().isoformat() + "Z"
+
+def _mk_proposal(case_id: str, action: Dict[str, Any]) -> Dict[str, Any]:
+    pid = "P-" + uuid.uuid4().hex[:10]
+    row = {
+        "id": pid,
+        "case_id": case_id,
+        "action": action,  # {type, label, payload, confidence, safety_score}
+        "status": "pending",  # pending|approved|rejected|executed
+        "created_at": _now_iso(),
+        "decided_at": None,
+        "executed_at": None,
+        "decided_by": None,
+        "decision_note": None,
+        "audit": [
+            {"ts": _now_iso(), "event": "created", "meta": {}}
+        ],
+    }
+    DEMO_PROPOSALS.append(row)
+    DEMO_PROPOSAL_BY_ID[pid] = row
+    return row
+
+def _case_or_404(case_id: str) -> Dict[str, Any]:
+    row = DEMO_BY_ID.get(case_id)
+    if not row:
+        raise HTTPException(status_code=404, detail=f"Case {case_id} not found")
+    return row
+
+@router.get("/dashboard/api/automation/pending")
+def list_pending_proposals():
+    pending = [p for p in DEMO_PROPOSALS if p["status"] == "pending"]
+    # newest first
+    pending.sort(key=lambda x: x["created_at"], reverse=True)
+    return {"items": pending, "count": len(pending)}
+
+@router.get("/dashboard/api/cases/{case_id}")
+def get_case_detail(case_id: str):
+    row = _case_or_404(case_id)
+    proposals = [p for p in DEMO_PROPOSALS if p["case_id"] == case_id]
+    proposals.sort(key=lambda x: x["created_at"], reverse=True)
+
+    # a simple "suggestion" computed from current queue (demo logic)
+    queue = row.get("queue")
+    suggested = []
+    if queue:
+        suggested.append({
+            "type": "advance_queue",
+            "label": f"Advance case to next queue from '{queue}'",
+            "payload": {"from_queue": queue},
+            "confidence": 0.86,
+            "safety_score": 0.92,
+        })
+
+    return {
+        "case": row,
+        "suggested_actions": suggested,
+        "proposals": proposals,
+    }
+
+@router.post("/dashboard/api/cases/{case_id}/propose")
+def propose_automation(
+    case_id: str,
+    action_type: str = Body(...),
+    label: str = Body(...),
+    payload: Dict[str, Any] = Body(default={}),
+    confidence: float = Body(0.75),
+    safety_score: float = Body(0.75),
+):
+    _case_or_404(case_id)
+    action = {
+        "type": action_type,
+        "label": label,
+        "payload": payload,
+        "confidence": confidence,
+        "safety_score": safety_score,
+    }
+    p = _mk_proposal(case_id, action)
+    return {"ok": True, "proposal": p}
+
+@router.post("/dashboard/api/automation/{proposal_id}/decide")
+def decide_proposal(
+    proposal_id: str,
+    decision: str = Body(..., embed=True),  # "approve" or "reject"
+    decided_by: str = Body("human", embed=True),
+    note: str = Body("", embed=True),
+):
+    p = DEMO_PROPOSAL_BY_ID.get(proposal_id)
+    if not p:
+        raise HTTPException(status_code=404, detail="Proposal not found")
+    if p["status"] != "pending":
+        raise HTTPException(status_code=409, detail=f"Proposal already {p['status']}")
+
+    if decision not in ("approve", "reject"):
+        raise HTTPException(status_code=400, detail="decision must be approve|reject")
+
+    p["status"] = "approved" if decision == "approve" else "rejected"
+    p["decided_at"] = _now_iso()
+    p["decided_by"] = decided_by
+    p["decision_note"] = note
+    p["audit"].append({"ts": _now_iso(), "event": f"decision:{decision}", "meta": {"by": decided_by, "note": note}})
+    return {"ok": True, "proposal": p}
+
+@router.post("/dashboard/api/automation/{proposal_id}/execute")
+def execute_proposal(
+    proposal_id: str,
+    executed_by: str = Body("system", embed=True),
+):
+    p = DEMO_PROPOSAL_BY_ID.get(proposal_id)
+    if not p:
+        raise HTTPException(status_code=404, detail="Proposal not found")
+    if p["status"] != "approved":
+        raise HTTPException(status_code=409, detail="Only approved proposals can be executed")
+
+    case = _case_or_404(p["case_id"])
+    action = p["action"]
+
+    # Demo execution: handle "advance_queue"
+    if action["type"] == "advance_queue":
+        cur = case.get("queue")
+        nxt = _next_queue(cur)  # <-- uses your existing function
+        case["queue"] = nxt or cur
+        case["status"] = "demo"
+        p["audit"].append({"ts": _now_iso(), "event": "executed:advance_queue", "meta": {"from": cur, "to": case["queue"]}})
+    else:
+        p["audit"].append({"ts": _now_iso(), "event": "executed:noop", "meta": {"reason": "unknown action type"}})
+
+    p["status"] = "executed"
+    p["executed_at"] = _now_iso()
+    p["executed_by"] = executed_by
+    return {"ok": True, "proposal": p, "case": case}
+
 
 @router.get("/dashboard/api/scenarios")
 def list_demo_scenarios():
