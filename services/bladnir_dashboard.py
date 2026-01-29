@@ -57,6 +57,20 @@ def _next_queue(cur: str) -> str:
 
     return cur
 
+# Preview-only next queue (NO gating) — used for Suggested Actions
+NEXT_QUEUE_PREVIEW = {
+    "contact_manager": "inbound_comms",
+    "inbound_comms": "data_entry",
+    "data_entry": "pre_verification",
+    "pre_verification": "dispensing",
+    "dispensing": "verification",
+}
+
+def next_queue_for(cur: str):
+    return NEXT_QUEUE_PREVIEW.get(cur)
+
+
+
 @router.get("/dashboard/api/automation")
 def dashboard_get_automation():
     return {"authorizations": AUTH}
