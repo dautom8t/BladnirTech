@@ -7,6 +7,8 @@ from fastapi.responses import HTMLResponse
 from datetime import datetime
 from typing import Dict, Any, List
 import uuid
+import logging
+log = logging.getLogger("uvicorn.error")
 
 
 from models.database import get_db
@@ -165,28 +167,53 @@ def list_pending_proposals():
     return {"items": pending, "count": len(pending)}
 
 @router.get("/dashboard/api/cases/{case_id}")
-def get_case_detail(case_id: int):
-    row = _case_or_404(case_id)
-    proposals = [p for p in DEMO_PROPOSALS if p["case_id"] == case_id]
-    proposals.sort(key=lambda x: x["created_at"], reverse=True)
+def get_case_detail(case_id: int, db=Depends(get_db)):
+    log.info(f"case_detail: case_id={case_id}")
 
-    # a simple "suggestion" computed from current queue (demo logic)
-    queue = row.get("queue")
-    suggested = []
-    if queue:
-        suggested.append({
-            "type": "advance_queue",
-            "label": f"Advance case to next queue from '{queue}'",
-            "payload": {"from_queue": queue},
-            "confidence": 0.86,
-            "safety_score": 0.92,
-        })
+    # DEMO case
+    if case_id < 0:
+        row = _case_or_404(case_id)
+        proposals = [p for p in DEMO_PROPOSALS if p["case_id"] == case_id]
+        proposals.sort(key=lambda x: x["created_at"], reverse=True)
 
-    return {
-        "case": row,
-        "suggested_actions": suggested,
-        "proposals": proposals,
+        queue = row.get("queue")
+        suggested = []
+        if queue:
+            suggested.append({
+                "type": "advance_queue",
+                "label": f"Advance case to next queue from '{queue}'",
+                "payload": {"from_queue": queue},
+                "confidence": 0.86,
+                "safety_score": 0.92,
+            })
+
+        return {"case": row, "suggested_actions": suggested, "proposals": proposals}
+
+    # DB workflow
+    wf = workflow_service.get_workflow(db, case_id)
+    if not wf:
+        raise HTTPException(status_code=404, detail="Workflow not found")
+
+    wf_read = workflow_service.to_workflow_read(wf).model_dump()
+    queue = wf_read.get("queue") or "data_entry"
+
+    case_view = {
+        "id": wf_read["id"],
+        "name": wf_read.get("name") or f"Workflow #{wf_read['id']}",
+        "state": wf_read.get("state", "unknown"),
+        "queue": queue,
+        "raw": wf_read,
     }
+
+    suggested = [{
+        "type": "advance_queue",
+        "label": f"Advance workflow to next queue from '{queue}'",
+        "payload": {"from_queue": queue},
+        "confidence": 0.80,
+        "safety_score": 0.85,
+    }]
+
+    return {"case": case_view, "suggested_actions": suggested, "proposals": []}
 
 @router.post("/dashboard/api/cases/{case_id}/propose")
 def propose_automation(
