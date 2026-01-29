@@ -582,8 +582,9 @@ def dashboard_ui():
         </div>
         <div class="row">
           <button class="small" onclick="autoStep()">Auto-step</button>
+          <button class="small" onclick="openAuthModal()">Proposals</button>
           <button class="small" onclick="toggleJson()">Toggle JSON</button>
-        </div>
+          </div>
       </div>
 
       <div style="height:10px"></div>
