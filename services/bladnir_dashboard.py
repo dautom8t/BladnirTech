@@ -943,20 +943,23 @@ async function refreshAuthModal(){
     sugEl.innerHTML = `<div class="muted">No suggestions available.</div>`;
   } else {
     sugEl.innerHTML = sug.map(a => {
-      const conf = (a.confidence ?? 0.0).toFixed(2);
-      const safe = (a.safety_score ?? 0.0).toFixed(2);
-      const payloadStr = JSON.stringify(a.payload || {});
+  const conf = (a.confidence ?? 0.0).toFixed(2);
+  const safe = (a.safety_score ?? 0.0).toFixed(2);
+  const payloadStr = JSON.stringify(a.payload || {});
+
+  const encoded = encodeURIComponent(JSON.stringify(a)); // 
+
       return `
-        <div class="item">
-          <b>${a.label}</b>
-          <div class="muted" style="margin-top:6px">type: ${a.type} • confidence: ${conf} • safety: ${safe}</div>
-          <div class="muted" style="margin-top:6px">payload: ${payloadStr}</div>
-          <div style="height:10px"></div>
-          <button class="small" onclick='createProposal(${JSON.stringify(a)})'>Create Proposal</button>
-        </div>
-      `;
-    }).join("");
-  }
+    <div class="item">
+      <b>${a.label}</b>
+      <div class="muted" style="margin-top:6px">type: ${a.type} • confidence: ${conf} • safety: ${safe}</div>
+      <div class="muted" style="margin-top:6px">payload: ${payloadStr}</div>
+      <div style="height:10px"></div>
+      <button class="small" onclick="createProposalEncoded('${encoded}')">Create Proposal</button>
+    </div>
+  `;
+   }).join("");
+}
 
   // Proposals
   const props = d.proposals || [];
