@@ -177,16 +177,20 @@ def get_case_detail(case_id: int, db=Depends(get_db)):
         proposals = [p for p in DEMO_PROPOSALS if p["case_id"] == case_id]
         proposals.sort(key=lambda x: x["created_at"], reverse=True)
 
-        queue = row.get("queue")
-        suggested = []
-        if queue:
-            suggested.append({
-                "type": "advance_queue",
-                "label": f"Advance case to next queue from '{queue}'",
-                "payload": {"from_queue": queue},
-                "confidence": 0.86,
-                "safety_score": 0.92,
-            })
+queue = row.get("queue")
+suggested = []
+
+if queue:
+    nq = next_queue_for(queue)
+    if nq:
+        suggested.append({
+            "type": "advance_queue",
+            "label": f"Advance case to next queue from '{queue}'",
+            "payload": {"from_queue": queue, "to_queue": nq},
+            "confidence": 0.86,
+            "safety_score": 0.92,
+        })
+
 
         return {"case": row, "suggested_actions": suggested, "proposals": proposals}
 
