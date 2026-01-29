@@ -160,11 +160,11 @@ DEMO_PROPOSAL_BY_ID: Dict[str, Dict[str, Any]] = {}
 def _now_iso() -> str:
     return datetime.utcnow().isoformat() + "Z"
 
-def _mk_proposal(case_id: str, action: Dict[str, Any]) -> Dict[str, Any]:
+def _mk_proposal(case_id: int, action: Dict[str, Any]) -> Dict[str, Any]:
     pid = "P-" + uuid.uuid4().hex[:10]
     row = {
         "id": pid,
-        "case_id": case_id,
+        "case_id": int(case_id),
         "action": action,  # {type, label, payload, confidence, safety_score}
         "status": "pending",  # pending|approved|rejected|executed
         "created_at": _now_iso(),
@@ -180,7 +180,7 @@ def _mk_proposal(case_id: str, action: Dict[str, Any]) -> Dict[str, Any]:
     DEMO_PROPOSAL_BY_ID[pid] = row
     return row
 
-def _case_or_404(case_id: str) -> Dict[str, Any]:
+def _case_or_404(case_id: int) -> Dict[str, Any]:
     row = DEMO_BY_ID.get(case_id)
     if not row:
         raise HTTPException(status_code=404, detail=f"Case {case_id} not found")
@@ -256,7 +256,7 @@ def get_case_detail(case_id: int, db=Depends(get_db)):
 
 @router.post("/dashboard/api/cases/{case_id}/propose")
 def propose_automation(
-    case_id: str,
+    case_id: int,
     action_type: str = Body(...),
     label: str = Body(...),
     payload: Dict[str, Any] = Body(default={}),
@@ -281,7 +281,7 @@ def decide_proposal(
     decided_by: str = Body("human", embed=True),
     note: str = Body("", embed=True),
 ):
-    p = DEMO_PROPOSALS_BY_ID.get(proposal_id)
+    p = DEMO_PROPOSAL_BY_ID.get(proposal_id)
     if not p:
         raise HTTPException(status_code=404, detail="Proposal not found")
     if p["status"] != "pending":
