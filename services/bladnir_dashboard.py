@@ -314,11 +314,11 @@ def execute_proposal(
 
     # Demo execution: handle "advance_queue"
     if action["type"] == "advance_queue":
-    cur = case.get("queue") or "data_entry"
+        cur = case.get("queue") or "data_entry"
 
     # Use suggested to_queue if present, otherwise preview next queue
-    payload = action.get("payload") or {}
-    to_q = payload.get("to_queue") or next_queue_for(cur)
+        payload = action.get("payload") or {}
+        to_q = payload.get("to_queue") or next_queue_for(cur)
 
     if not to_q:
         p["audit"].append({"ts": _now_iso(), "event": "executed:noop", "meta": {"reason": f"no transition from {cur}"}})
