@@ -525,7 +525,8 @@ def dashboard_auto_step(
             raise HTTPException(status_code=404, detail="Demo workflow not found")
 
         cur = row.get("queue") or "data_entry"
-        nxt = _next_queue(cur)
+        nxt, gk = step_queue(cur)   # governance-enforced
+
 
         if nxt == cur:
             return {"ok": True, "note": f"No rule for queue '{cur}'", "queue": cur}
