@@ -310,32 +310,39 @@ def execute_proposal(
         raise HTTPException(status_code=409, detail="Only approved proposals can be executed")
 
     case = _case_or_404(p["case_id"])
-    action = p["action"]
+    action = p.get("action") or {}
 
     # Demo execution: handle "advance_queue"
-    if action["type"] == "advance_queue":
+    if action.get("type") == "advance_queue":
         cur = case.get("queue") or "data_entry"
 
-    # Use suggested to_queue if present, otherwise preview next queue
         payload = action.get("payload") or {}
         to_q = payload.get("to_queue") or next_queue_for(cur)
 
-    if not to_q:
-        p["audit"].append({"ts": _now_iso(), "event": "executed:noop", "meta": {"reason": f"no transition from {cur}"}})
-    else:
-        # Enforce governance gate for this transition
-        gk = gate_for_transition(cur, to_q)
-        if gk:
-            governance.require_authorized(gk)
+        if not to_q:
+            p["audit"].append({
+                "ts": _now_iso(),
+                "event": "executed:noop",
+                "meta": {"reason": f"no transition from {cur}"},
+            })
+        else:
+            gk = gate_for_transition(cur, to_q)
+            if gk:
+                governance.require_authorized(gk)
 
-        case["queue"] = to_q
-        case["status"] = "demo"
-        p["audit"].append({"ts": _now_iso(), "event": "executed:advance_queue", "meta": {"from": cur, "to": case["queue"]}})
-
-        case["status"] = "demo"
-        p["audit"].append({"ts": _now_iso(), "event": "executed:advance_queue", "meta": {"from": cur, "to": case["queue"]}})
+            case["queue"] = to_q
+            case["status"] = "demo"
+            p["audit"].append({
+                "ts": _now_iso(),
+                "event": "executed:advance_queue",
+                "meta": {"from": cur, "to": case["queue"]},
+            })
     else:
-        p["audit"].append({"ts": _now_iso(), "event": "executed:noop", "meta": {"reason": "unknown action type"}})
+        p["audit"].append({
+            "ts": _now_iso(),
+            "event": "executed:noop",
+            "meta": {"reason": "unknown action type"},
+        })
 
     p["status"] = "executed"
     p["executed_at"] = _now_iso()
