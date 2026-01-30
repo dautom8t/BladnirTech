@@ -263,7 +263,7 @@ def decide_proposal(
     if p["status"] != "pending":
         raise HTTPException(status_code=409, detail=f"Proposal already {p['status']}")
     if decision not in ("approve", "reject"):
-        raise HTTPException(status_code=400, detail="decision must be approve|reject"
+        raise HTTPException(status_code=400, detail="decision must be approve|reject")
 
     from_q = payload.get("from_queue")
     to_q = payload.get("to_queue")
