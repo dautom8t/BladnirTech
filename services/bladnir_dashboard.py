@@ -257,46 +257,57 @@ def decide_proposal(
     decided_by: str = Body("human", embed=True),
     note: str = Body("", embed=True),
 ):
-    p = DEMO_PROPOSAL_BY_ID.get(proposal_id)
-    if not p:
-        raise HTTPException(status_code=404, detail="Proposal not found")
-    if p["status"] != "pending":
-        raise HTTPException(status_code=409, detail=f"Proposal already {p['status']}")
-    if decision not in ("approve", "reject"):
-        raise HTTPException(status_code=400, detail="decision must be approve|reject")
+    try:
+        p = DEMO_PROPOSAL_BY_ID.get(proposal_id)
+        if not p:
+            raise HTTPException(status_code=404, detail="Proposal not found")
+        if p.get("status") != "pending":
+            raise HTTPException(status_code=409, detail=f"Proposal already {p.get('status')}")
+        if decision not in ("approve", "reject"):
+            raise HTTPException(status_code=400, detail="decision must be approve|reject")
 
-    from_q = payload.get("from_queue")
-    to_q = payload.get("to_queue")
-    gk = gate_for_transition(from_q, to_q) if from_q and to_q else None
-    if gk:
-        governance.authorize_gate(gk, actor=decided_by, note=note)
+        # update status
+        p["status"] = "approved" if decision == "approve" else "rejected"
+        p["decided_at"] = _now_iso()
+        p["decided_by"] = decided_by
+        p["decision_note"] = note
 
+        # ensure audit list exists
+        if "audit" not in p or not isinstance(p["audit"], list):
+            p["audit"] = []
 
-    
-    if decision == "approve":
-        p["status"] = "approved"
+        # if approved, authorize the corresponding gate (best-effort)
+        if decision == "approve":
+            action = p.get("action") or {}
+            payload = action.get("payload") or {}
+            from_q = payload.get("from_queue")
+            to_q = payload.get("to_queue")
 
-        # ✅ GOVERNANCE AUTH
-        action = p.get("action", {}) or {}
-        action_type = action.get("type") or action.get("action_type")
-        payload = action.get("payload", {}) or {}
+            if from_q and to_q:
+                # gate_for_transition must exist; if not, skip gracefully
+                gk = None
+                try:
+                    gk = gate_for_transition(from_q, to_q)
+                except Exception:
+                    gk = None
 
-        key = governance.gate_key_from_action(
-            tenant="kroger",
-            action_type=action_type,
-            payload=payload,
-        )
-        if key:
-            governance.authorize_gate(key, actor=decided_by, note=note)
+                if gk:
+                    governance.authorize_gate(gk, actor=decided_by, note=note)
 
-    else:
-        p["status"] = "rejected"
+        p["audit"].append({
+            "ts": _now_iso(),
+            "event": f"decision:{decision}",
+            "meta": {"by": decided_by, "note": note},
+        })
 
-    p["decided_at"] = _now_iso()
-    p["decided_by"] = decided_by
-    p["decision_note"] = note
-    p["audit"].append({"ts": _now_iso(), "event": f"decision:{decision}", "meta": {"by": decided_by, "note": note}})
-    return {"ok": True, "proposal": p}
+        return {"ok": True, "proposal": p}
+
+    except HTTPException:
+        raise
+    except Exception as e:
+        log.exception("decide_proposal crashed")
+        raise HTTPException(status_code=500, detail=f"decide_proposal error: {type(e).__name__}: {e}")
+
 
 @router.post("/dashboard/api/automation/{proposal_id}/execute")
 def execute_proposal(
