@@ -306,9 +306,24 @@ def execute_proposal(
 
     # Demo execution: handle "advance_queue"
     if action["type"] == "advance_queue":
-        cur = case.get("queue")
-        nxt = _next_queue(cur)  # <-- uses your existing function
-        case["queue"] = nxt or cur
+    cur = case.get("queue") or "data_entry"
+
+    # Use suggested to_queue if present, otherwise preview next queue
+    payload = action.get("payload") or {}
+    to_q = payload.get("to_queue") or next_queue_for(cur)
+
+    if not to_q:
+        p["audit"].append({"ts": _now_iso(), "event": "executed:noop", "meta": {"reason": f"no transition from {cur}"}})
+    else:
+        # Enforce governance gate for this transition
+        gk = gate_for_transition(cur, to_q)
+        if gk:
+            governance.require_authorized(gk)
+
+        case["queue"] = to_q
+        case["status"] = "demo"
+        p["audit"].append({"ts": _now_iso(), "event": "executed:advance_queue", "meta": {"from": cur, "to": case["queue"]}})
+
         case["status"] = "demo"
         p["audit"].append({"ts": _now_iso(), "event": "executed:advance_queue", "meta": {"from": cur, "to": case["queue"]}})
     else:
