@@ -21,79 +21,55 @@ router = APIRouter(tags=["dashboard"])
 
 from typing import Dict
 
-# -------------------------
-# Authorized Automation (in-memory demo store)
-# -------------------------
-AUTH: Dict[str, bool] = {
-    "kroger.prescriber_approval_to_data_entry": False,
-    "kroger.data_entry_to_preverify_insurance": False,
-    "kroger.preverify_to_access_granted": False,
-}
 
-def _gate(key: str):
-    if not AUTH.get(key, False):
-        raise HTTPException(status_code=403, detail=f"Automation not authorized: {key}")
-
-def _next_queue(cur: str) -> str:
-    if cur == "contact_manager":
-        _gate("kroger.prescriber_approval_to_data_entry")
-        return "inbound_comms"
-
-    if cur == "inbound_comms":
-        _gate("kroger.prescriber_approval_to_data_entry")
-        return "data_entry"
-
-    if cur == "data_entry":
-        _gate("kroger.data_entry_to_preverify_insurance")
-        return "pre_verification"
-
-    if cur == "pre_verification":
-        _gate("kroger.preverify_to_access_granted")
-        return "dispensing"
-
-    if cur == "dispensing":
-        _gate("kroger.preverify_to_access_granted")
-        return "verification"
-
-    return cur
-
-# Preview-only next queue (NO gating) — used for Suggested Actions
-NEXT_QUEUE_PREVIEW = {
-    "contact_manager": "inbound_comms",
-    "inbound_comms": "data_entry",
-    "data_entry": "pre_verification",
-    "pre_verification": "dispensing",
-    "dispensing": "verification",
+# Single source of truth: transitions + the gate key required
+TRANSITIONS = {
+    "contact_manager":  {"to": "inbound_comms",     "gate": "kroger.prescriber_approval_to_data_entry"},
+    "inbound_comms":    {"to": "data_entry",        "gate": "kroger.prescriber_approval_to_data_entry"},
+    "data_entry":       {"to": "pre_verification",  "gate": "kroger.data_entry_to_preverify_insurance"},
+    "pre_verification": {"to": "dispensing",        "gate": "kroger.preverify_to_access_granted"},
+    "dispensing":       {"to": "verification",      "gate": "kroger.preverify_to_access_granted"},
 }
 
 def next_queue_for(cur: str):
-    return NEXT_QUEUE_PREVIEW.get(cur)
+    """Preview-only (no gating). Used for Suggested Actions."""
+    t = TRANSITIONS.get(cur)
+    return t["to"] if t else None
 
-from enterprise import governance
+def gate_for_transition(from_q: str, to_q: str):
+    t = TRANSITIONS.get(from_q)
+    if not t or t["to"] != to_q:
+        return None
+    return t["gate"]
 
-@router.get("/dashboard/api/governance/gates")
-def list_gates():
-    return {"gates": list(governance.list_gates().values())}
-
-@router.post("/dashboard/api/governance/authorize")
-def authorize(payload: dict):
-    key = payload.get("key")
-    if not key:
-        raise HTTPException(422, "Missing key")
-    return {"ok": True, "gate": governance.authorize_gate(key, actor="human", note=payload.get("note",""))}
-
+def step_queue(cur: str):
+    """Enforced step (requires governance authorization)."""
+    t = TRANSITIONS.get(cur)
+    if not t:
+        return cur, None
+    governance.require_authorized(t["gate"])
+    return t["to"], t["gate"]
 
 @router.get("/dashboard/api/automation")
 def dashboard_get_automation():
-    return {"authorizations": AUTH}
+    # UI expects {authorizations:{key:bool}}
+    gates = governance.list_gates()
+    keys = {t["gate"] for t in TRANSITIONS.values()}
+    return {"authorizations": {k: bool(gates.get(k, {}).get("enabled", False)) for k in keys}}
 
 @router.post("/dashboard/api/automation")
 def dashboard_set_automation(
     transition_key: str = Body(..., embed=True),
     enabled: bool = Body(..., embed=True),
+    decided_by: str = Body("human", embed=True),
+    note: str = Body("", embed=True),
 ):
-    AUTH[transition_key] = bool(enabled)
-    return {"authorizations": AUTH}
+    if enabled:
+        governance.authorize_gate(transition_key, actor=decided_by, note=note)
+    else:
+        governance.revoke_gate(transition_key, actor=decided_by, note=note)
+    return dashboard_get_automation()
+
 
 DEMO_SCENARIOS = {
     "happy_path": {
