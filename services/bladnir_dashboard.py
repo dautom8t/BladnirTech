@@ -545,7 +545,9 @@ def dashboard_auto_step(
         raise HTTPException(status_code=404, detail="Workflow not found")
 
     cur = "data_entry"
-    nxt = _next_queue(cur)
+    nxt, gk = step_queue(cur)   # governance-enforced
+
+    
 
     workflow_service.add_event(db, workflow_id, EventCreate(event_type="auto_step", payload={"from": cur, "to": nxt}))
     workflow_service.add_event(db, workflow_id, EventCreate(event_type="queue_changed", payload={"from": cur, "to": nxt}))
