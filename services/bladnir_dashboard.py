@@ -282,12 +282,12 @@ def decide_proposal(
         p["status"] = "approved" if decision == "approve" else "rejected"
         p["decided_at"] = _now_iso()
         if decision == "approve":
-        p["approved_by"] = decided_by
-        p["approved_at"] = _now_iso()
+            p["approved_by"] = decided_by
+            p["approved_at"] = _now_iso()
  else:
-        p["rejected_by"] = decided_by
-        p["rejected_at"] = _now_iso()
-        p["decision_note"] = note
+            p["rejected_by"] = decided_by
+            p["rejected_at"] = _now_iso()
+            p["decision_note"] = note
 
         # ensure audit list exists
         if "audit" not in p or not isinstance(p["audit"], list):
@@ -312,10 +312,10 @@ def decide_proposal(
                     governance.authorize_gate(gk, actor=decided_by, note=note)
 
         p["audit"].append({
-    "ts": _now_iso(),
-    "event": "approved",
-    "meta": {"by": decided_by}
-})
+            "ts": _now_iso(),
+            "event": "approved",
+            "meta": {"by": decided_by}
+        })
 
 
         return {"ok": True, "proposal": p}
@@ -373,14 +373,14 @@ def execute_proposal(
             "meta": {"reason": "unknown action type"},
         })
 
-    p["status"] = "executed"
-    p["executed_at"] = _now_iso()
-    p["executed_by"] = executed_by
-    p["audit"].append({
-    "ts": _now_iso(),
-    "event": "executed",
-    "meta": {"by": executed_by}
-})
+        p["status"] = "executed"
+        p["executed_at"] = _now_iso()
+        p["executed_by"] = executed_by
+        p["audit"].append({
+        "ts": _now_iso(),
+        "event": "executed",
+        "meta": {"by": executed_by}
+        })
 
     return {"ok": True, "proposal": p, "case": case}
 
