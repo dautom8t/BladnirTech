@@ -408,14 +408,9 @@ def seed_demo_cases(
         s = DEMO_SCENARIOS.get(sid, DEMO_SCENARIOS["happy_path"])
         demo_id = -(len(DEMO_ROWS) + 1)
 
-        queue_map = {
-            "happy_path": "contact_manager",
-            "prior_auth_required": "inbound_comms",
-            "no_refills_prescriber": "data_entry",
-            "no_insurance_discount_card": "pre_verification",
-            "insurance_rejected_outdated": "dispensing",
-        }
-        start_queue = queue_map.get(sid, "data_entry")
+        # Pitch mode: start all scenarios at the same queue for consistent demos
+        start_queue = "inbound_comms"
+
 
         raw = {
             "id": demo_id,
