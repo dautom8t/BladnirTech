@@ -278,47 +278,47 @@ def decide_proposal(
         if decision not in ("approve", "reject"):
             raise HTTPException(status_code=400, detail="decision must be approve|reject")
 
+        
         # update status
-        p["status"] = "approved" if decision == "approve" else "rejected"
-        p["decided_at"] = _now_iso()
-        if decision == "approve":
-            p["approved_by"] = decided_by
-            p["approved_at"] = _now_iso()
- else:
-            p["rejected_by"] = decided_by
-            p["rejected_at"] = _now_iso()
-            p["decision_note"] = note
+p["status"] = "approved" if decision == "approve" else "rejected"
+p["decided_at"] = _now_iso()
+p["decided_by"] = decided_by
+p["decision_note"] = note
 
-        # ensure audit list exists
-        if "audit" not in p or not isinstance(p["audit"], list):
-            p["audit"] = []
+# attribution fields
+if decision == "approve":
+    p["approved_by"] = decided_by
+    p["approved_at"] = _now_iso()
+else:
+    p["rejected_by"] = decided_by
+    p["rejected_at"] = _now_iso()
 
-        # if approved, authorize the corresponding gate (best-effort)
-        if decision == "approve":
-            action = p.get("action") or {}
-            payload = action.get("payload") or {}
-            from_q = payload.get("from_queue")
-            to_q = payload.get("to_queue")
+# ensure audit list exists
+if "audit" not in p or not isinstance(p["audit"], list):
+    p["audit"] = []
 
-            if from_q and to_q:
-                # gate_for_transition must exist; if not, skip gracefully
-                gk = None
-                try:
-                    gk = gate_for_transition(from_q, to_q)
-                except Exception:
-                    gk = None
+# if approved, authorize corresponding gate (best-effort)
+if decision == "approve":
+    action = p.get("action") or {}
+    payload = action.get("payload") or {}
+    from_q = payload.get("from_queue")
+    to_q = payload.get("to_queue")
 
-                if gk:
-                    governance.authorize_gate(gk, actor=decided_by, note=note)
+    if from_q and to_q:
+        gk = gate_for_transition(from_q, to_q)
+        if gk:
+            governance.authorize_gate(gk, actor=decided_by, note=note)
 
-        p["audit"].append({
-            "ts": _now_iso(),
-            "event": "approved",
-            "meta": {"by": decided_by}
-        })
+# audit decision (correctly tied to approve vs reject)
+p["audit"].append({
+    "ts": _now_iso(),
+    "event": f"decision:{decision}",
+    "meta": {"by": decided_by, "note": note},
+})
+
+return {"ok": True, "proposal": p}
 
 
-        return {"ok": True, "proposal": p}
 
     except HTTPException:
         raise
