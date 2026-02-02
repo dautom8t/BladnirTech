@@ -9,7 +9,8 @@ from typing import List
 
 from fastapi import Depends, FastAPI, HTTPException, Path, status
 from fastapi.middleware.cors import CORSMiddleware
-from fastapi.responses import HTMLResponse
+from fastapi.responses import RedirectResponse
+
 
 from models.database import Base, engine, get_db
 from models.schemas import (
@@ -34,7 +35,7 @@ logger = logging.getLogger(__name__)
 # Create tables (dev-only; for prod use Alembic migrations)
 Base.metadata.create_all(bind=engine)
 
-app = FastAPI(title="Bladnir Tech Demo")
+app = FastAPI(title="Bladnir Tech- Control Tower")
 
 from services.kroger_retail_pack import router as kroger_router
 app.include_router(kroger_router)
@@ -74,49 +75,15 @@ def dashboard_get_automation(db=Depends(get_db)):
     # You can wire this to DB later.
     return {"authorizations": {}}
     
-@app.get("/", response_class=HTMLResponse)
+@app.get("/")
 def home():
-    return """
-    <html>
-      <head><title>Bladnir Tech Demo</title></head>
-      <body style="font-family: Arial; padding: 24px;">
-        <h1>Bladnir Tech</h1>
-        <p><b>Workflow Orchestration Middleware Demo</b></p>
-        <ul>
-          <li><a href="/demo">Open Demo UI</a></li>
-          <li><a href="/docs">Open API Docs</a></li>
-        </ul>
-      </body>
-    </html>
-    """
+    return RedirectResponse(url="/dashboard")
 
-@app.get("/demo", response_class=HTMLResponse)
+
+@app.get("/demo")
 def demo_ui():
-    return """
-    <html>
-      <head><title>Demo UI</title></head>
-      <body style="font-family: Arial; padding: 30px;">
-        <h2>Bladnir Tech Demo</h2>
-        <p>Click the button below to create a workflow.</p>
-        <button onclick="createWorkflow()">Create Workflow</button>
-        <pre id="out" style="margin-top:15px; background:#111; color:#0f0; padding:10px;"></pre>
-        <script>
-          async function createWorkflow(){
-            const res = await fetch('/workflows', {
-              method: 'POST',
-              headers: {'Content-Type': 'application/json'},
-              body: JSON.stringify({
-                name: "Medication Order Demo",
-                description: "Order → Access → Dispense"
-              })
-            });
-            const data = await res.json();
-            document.getElementById("out").textContent = JSON.stringify(data, null, 2);
-          }
-        </script>
-      </body>
-    </html>
-    """
+    return RedirectResponse(url="/dashboard")
+
 
 @app.post("/workflows", response_model=WorkflowRead, status_code=status.HTTP_201_CREATED)
 def api_create_workflow(workflow_in: WorkflowCreate, db=Depends(get_db)):
