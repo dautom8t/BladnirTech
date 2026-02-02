@@ -141,17 +141,29 @@ def _mk_proposal(case_id: int, action: Dict[str, Any]) -> Dict[str, Any]:
     row = {
         "id": pid,
         "case_id": int(case_id),
-        "action": action,  # {type, label, payload, confidence, safety_score}
-        "status": "pending",  # pending|approved|rejected|executed
-        "created_at": _now_iso(),
-        "decided_at": None,
+
+        # ✅ ACTION
+        "action": action,
+
+        # ✅ STATUS
+        "status": "pending",
+
+        # ✅ ATTRIBUTION
+        "proposed_by": "system",
+        "proposed_at": _now_iso(),
+
+        "approved_by": None,
+        "approved_at": None,
+
+        "executed_by": None,
         "executed_at": None,
-        "decided_by": None,
-        "decision_note": None,
+
+        # ✅ AUDIT TRAIL
         "audit": [
-            {"ts": _now_iso(), "event": "created", "meta": {}}
+            {"ts": _now_iso(), "event": "created", "meta": {"by": "system"}}
         ],
     }
+
     DEMO_PROPOSALS.append(row)
     DEMO_PROPOSAL_BY_ID[pid] = row
     return row
@@ -269,7 +281,12 @@ def decide_proposal(
         # update status
         p["status"] = "approved" if decision == "approve" else "rejected"
         p["decided_at"] = _now_iso()
-        p["decided_by"] = decided_by
+        if decision == "approve":
+        p["approved_by"] = decided_by
+        p["approved_at"] = _now_iso()
+ else:
+        p["rejected_by"] = decided_by
+        p["rejected_at"] = _now_iso()
         p["decision_note"] = note
 
         # ensure audit list exists
@@ -295,10 +312,11 @@ def decide_proposal(
                     governance.authorize_gate(gk, actor=decided_by, note=note)
 
         p["audit"].append({
-            "ts": _now_iso(),
-            "event": f"decision:{decision}",
-            "meta": {"by": decided_by, "note": note},
-        })
+    "ts": _now_iso(),
+    "event": "approved",
+    "meta": {"by": decided_by}
+})
+
 
         return {"ok": True, "proposal": p}
 
@@ -358,6 +376,12 @@ def execute_proposal(
     p["status"] = "executed"
     p["executed_at"] = _now_iso()
     p["executed_by"] = executed_by
+    p["audit"].append({
+    "ts": _now_iso(),
+    "event": "executed",
+    "meta": {"by": executed_by}
+})
+
     return {"ok": True, "proposal": p, "case": case}
 
 
@@ -736,6 +760,13 @@ def dashboard_ui():
     <pre id="json" style="display:none">{}</pre>
   </div>
 </div>
+
+<div class="muted">
+  Proposed: ${p.proposed_by || "—"} |
+  Approved: ${p.approved_by || "—"} |
+  Executed: ${p.executed_by || "—"}
+</div>
+
 
 <script>
   let ALL = [];
@@ -1146,7 +1177,7 @@ async function decideProposal(pid, decision){
   await api(`/dashboard/api/automation/${pid}/decide`, {
     method:"POST",
     headers: {"Content-Type":"application/json"},
-    body: JSON.stringify({ decision, decided_by: "human", note: "" })
+    body: JSON.stringify({ decision, decided_by: "Pharmacy_Manager", note: "" })
   });
   await refreshAll();
   await refreshAuthModal();
