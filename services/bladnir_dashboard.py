@@ -341,48 +341,50 @@ def execute_proposal(
     case = _case_or_404(p["case_id"])
     action = p.get("action") or {}
 
-    # Demo execution: handle "advance_queue"
-    if action.get("type") == "advance_queue":
-        cur = case.get("queue") or "data_entry"
+# Demo execution: handle "advance_queue"
+if action.get("type") == "advance_queue":
+    cur = case.get("queue") or "data_entry"
 
-        payload = action.get("payload") or {}
-        to_q = payload.get("to_queue") or next_queue_for(cur)
+    payload = action.get("payload") or {}
+    to_q = payload.get("to_queue") or next_queue_for(cur)
 
-        if not to_q:
-            p["audit"].append({
-                "ts": _now_iso(),
-                "event": "executed:noop",
-                "meta": {"reason": f"no transition from {cur}"},
-            })
-        else:
-            gk = gate_for_transition(cur, to_q)
-            if gk:
-                governance.require_authorized(gk)
-
-            case["queue"] = to_q
-            case["status"] = "demo"
-            p["audit"].append({
-                "ts": _now_iso(),
-                "event": "executed:advance_queue",
-                "meta": {"from": cur, "to": case["queue"]},
-            })
-    else:
+    if not to_q:
         p["audit"].append({
             "ts": _now_iso(),
             "event": "executed:noop",
-            "meta": {"reason": "unknown action type"},
+            "meta": {"reason": f"no transition from {cur}"},
         })
+    else:
+        gk = gate_for_transition(cur, to_q)
+        if gk:
+            governance.require_authorized(gk)
 
-        p["status"] = "executed"
-        p["executed_at"] = _now_iso()
-        p["executed_by"] = executed_by
+        case["queue"] = to_q
+        case["status"] = "demo"
         p["audit"].append({
-        "ts": _now_iso(),
-        "event": "executed",
-        "meta": {"by": executed_by}
+            "ts": _now_iso(),
+            "event": "executed:advance_queue",
+            "meta": {"from": cur, "to": case["queue"]},
         })
+else:
+    p["audit"].append({
+        "ts": _now_iso(),
+        "event": "executed:noop",
+        "meta": {"reason": "unknown action type"},
+    })
 
-    return {"ok": True, "proposal": p, "case": case}
+# IMPORTANT: mark executed regardless of branch
+p["status"] = "executed"
+p["executed_at"] = _now_iso()
+p["executed_by"] = executed_by
+p["audit"].append({
+    "ts": _now_iso(),
+    "event": "executed",
+    "meta": {"by": executed_by},
+})
+
+return {"ok": True, "proposal": p, "case": case}
+
 
 
 @router.get("/dashboard/api/scenarios")
