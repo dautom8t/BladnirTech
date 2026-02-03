@@ -366,8 +366,7 @@ p["audit"].append({
     "event": "executed",
     "meta": {"by": executed_by},
 })
-
-    return {"ok": True, "proposal": p, "case": case}
+return {"ok": True, "proposal": p, "case": case}
 
 
 
