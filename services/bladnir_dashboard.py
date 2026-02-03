@@ -367,7 +367,7 @@ p["audit"].append({
     "meta": {"by": executed_by},
 })
 
-return {"ok": True, "proposal": p, "case": case}
+    return {"ok": True, "proposal": p, "case": case}
 
 
 
