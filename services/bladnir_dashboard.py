@@ -265,7 +265,7 @@ def propose_automation(
 @router.post("/dashboard/api/automation/{proposal_id}/decide")
 def decide_proposal(
     proposal_id: str,
-    decision: str = Body(..., embed=True),  # "approve" or "reject"
+    decision: str = Body(..., embed=True),
     decided_by: str = Body("human", embed=True),
     note: str = Body("", embed=True),
 ):
@@ -278,53 +278,37 @@ def decide_proposal(
         if decision not in ("approve", "reject"):
             raise HTTPException(status_code=400, detail="decision must be approve|reject")
 
-        
         # update status
-p["status"] = "approved" if decision == "approve" else "rejected"
-p["decided_at"] = _now_iso()
-p["decided_by"] = decided_by
-p["decision_note"] = note
+        p["status"] = "approved" if decision == "approve" else "rejected"
+        p["decided_at"] = _now_iso()
+        p["decided_by"] = decided_by
+        p["decision_note"] = note
 
-# attribution fields
-if decision == "approve":
-    p["approved_by"] = decided_by
-    p["approved_at"] = _now_iso()
-else:
-    p["rejected_by"] = decided_by
-    p["rejected_at"] = _now_iso()
+        # attribution fields
+        if decision == "approve":
+            p["approved_by"] = decided_by
+            p["approved_at"] = _now_iso()
+        else:
+            p["rejected_by"] = decided_by
+            p["rejected_at"] = _now_iso()
 
-# ensure audit list exists
-if "audit" not in p or not isinstance(p["audit"], list):
-    p["audit"] = []
+        if "audit" not in p or not isinstance(p["audit"], list):
+            p["audit"] = []
 
-# if approved, authorize corresponding gate (best-effort)
-if decision == "approve":
-    action = p.get("action") or {}
-    payload = action.get("payload") or {}
-    from_q = payload.get("from_queue")
-    to_q = payload.get("to_queue")
+        p["audit"].append({
+            "ts": _now_iso(),
+            "event": f"decision:{decision}",
+            "meta": {"by": decided_by, "note": note},
+        })
 
-    if from_q and to_q:
-        gk = gate_for_transition(from_q, to_q)
-        if gk:
-            governance.authorize_gate(gk, actor=decided_by, note=note)
-
-# audit decision (correctly tied to approve vs reject)
-p["audit"].append({
-    "ts": _now_iso(),
-    "event": f"decision:{decision}",
-    "meta": {"by": decided_by, "note": note},
-})
-
-return {"ok": True, "proposal": p}
-
-
+        return {"ok": True, "proposal": p}
 
     except HTTPException:
         raise
     except Exception as e:
         log.exception("decide_proposal crashed")
         raise HTTPException(status_code=500, detail=f"decide_proposal error: {type(e).__name__}: {e}")
+
 
 
 @router.post("/dashboard/api/automation/{proposal_id}/execute")
