@@ -185,6 +185,10 @@ def list_pending_proposals():
 def get_case_detail(case_id: int, db=Depends(get_db)):
     log.info(f"case_detail: case_id={case_id}")
 
+    # UI sentinel: no case selected
+    if case_id == -1:
+        raise HTTPException(status_code=400, detail="No case selected")
+    
     # ----------------
     # DEMO case (negative IDs)
     # ----------------
