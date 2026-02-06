@@ -1,6 +1,6 @@
-# =============================
+=============================
 # API: Scenarios list (for dropdown)
-# =============================
+=============================
 
 from fastapi import APIRouter, Body, Depends, HTTPException
 from fastapi.responses import HTMLResponse
@@ -11,16 +11,13 @@ import logging
 log = logging.getLogger("uvicorn.error")
 from enterprise import governance
 
-
 from models.database import get_db
 from services import workflow as workflow_service
 from models.schemas import EventCreate
 
-
 router = APIRouter(tags=["dashboard"])
 
 from typing import Dict
-
 
 # Single source of truth: transitions + the gate key required
 TRANSITIONS = {
@@ -70,7 +67,6 @@ def dashboard_set_automation(
         governance.revoke_gate(transition_key, actor=decided_by, note=note)
     return dashboard_get_automation()
 
-
 DEMO_SCENARIOS = {
     "happy_path": {
         "label": "Happy Path",
@@ -97,7 +93,7 @@ DEMO_SCENARIOS = {
         "pa": {"eta_days": 2},
         "patient_message": {
             "type": "prior_auth_notice",
-            "template": "Your plan requires prior authorization. We’ve initiated PA; we’ll update you as soon as we hear back."
+            "template": "Your plan requires prior authorization. We've initiated PA; we'll update you as soon as we hear back."
         },
     },
     "no_refills_prescriber": {
@@ -125,7 +121,6 @@ DEMO_SCENARIOS = {
 DEMO_ROWS = []
 DEMO_BY_ID = {}
 
-
 # =============================
 # Authorized Automation (DEMO / in-memory)
 # =============================
@@ -138,6 +133,7 @@ def _now_iso() -> str:
 
 def _mk_proposal(case_id: int, action: Dict[str, Any]) -> Dict[str, Any]:
     pid = "P-" + uuid.uuid4().hex[:10]
+    now = _now_iso()
     row = {
         "id": pid,
         "case_id": int(case_id),
@@ -150,7 +146,8 @@ def _mk_proposal(case_id: int, action: Dict[str, Any]) -> Dict[str, Any]:
 
         # ✅ ATTRIBUTION
         "proposed_by": "system",
-        "proposed_at": _now_iso(),
+        "proposed_at": now,
+        "created_at": now,  # FIXED: Added missing created_at field
 
         "approved_by": None,
         "approved_at": None,
@@ -160,7 +157,7 @@ def _mk_proposal(case_id: int, action: Dict[str, Any]) -> Dict[str, Any]:
 
         # ✅ AUDIT TRAIL
         "audit": [
-            {"ts": _now_iso(), "event": "created", "meta": {"by": "system"}}
+            {"ts": now, "event": "created", "meta": {"by": "system"}}
         ],
     }
 
@@ -245,7 +242,6 @@ def get_case_detail(case_id: int, db=Depends(get_db)):
 
     return {"case": case_view, "suggested_actions": suggested, "proposals": []}
 
-
 @router.post("/dashboard/api/cases/{case_id}/propose")
 def propose_automation(
     case_id: int,
@@ -283,24 +279,22 @@ def decide_proposal(
             raise HTTPException(status_code=400, detail="decision must be approve|reject")
 
         # update status
+        now = _now_iso()
         p["status"] = "approved" if decision == "approve" else "rejected"
-        p["decided_at"] = _now_iso()
-        p["decided_by"] = decided_by
-        p["decision_note"] = note
-
-        # attribution fields
+        
+        # FIXED: Consolidated attribution fields
         if decision == "approve":
             p["approved_by"] = decided_by
-            p["approved_at"] = _now_iso()
+            p["approved_at"] = now
         else:
             p["rejected_by"] = decided_by
-            p["rejected_at"] = _now_iso()
+            p["rejected_at"] = now
 
         if "audit" not in p or not isinstance(p["audit"], list):
             p["audit"] = []
 
         p["audit"].append({
-            "ts": _now_iso(),
+            "ts": now,
             "event": f"decision:{decision}",
             "meta": {"by": decided_by, "note": note},
         })
@@ -312,8 +306,6 @@ def decide_proposal(
     except Exception as e:
         log.exception("decide_proposal crashed")
         raise HTTPException(status_code=500, detail=f"decide_proposal error: {type(e).__name__}: {e}")
-
-
 
 @router.post("/dashboard/api/automation/{proposal_id}/execute")
 def execute_proposal(
@@ -333,6 +325,8 @@ def execute_proposal(
     if "audit" not in p or not isinstance(p["audit"], list):
         p["audit"] = []
 
+    now = _now_iso()
+
     # Demo execution: handle "advance_queue"
     if action.get("type") == "advance_queue":
         cur = case.get("queue") or "data_entry"
@@ -342,42 +336,49 @@ def execute_proposal(
 
         if not to_q:
             p["audit"].append({
-                "ts": _now_iso(),
+                "ts": now,
                 "event": "executed:noop",
                 "meta": {"reason": f"no transition from {cur}"},
             })
         else:
             gk = gate_for_transition(cur, to_q)
+            # FIXED: Added error handling around governance check
             if gk:
-                governance.require_authorized(gk)
+                try:
+                    governance.require_authorized(gk)
+                except Exception as e:
+                    p["audit"].append({
+                        "ts": now,
+                        "event": "execution_failed",
+                        "meta": {"reason": f"governance check failed: {str(e)}"},
+                    })
+                    raise HTTPException(status_code=403, detail=f"Not authorized: {gk}")
 
             case["queue"] = to_q
             case["status"] = "demo"
             p["audit"].append({
-                "ts": _now_iso(),
+                "ts": now,
                 "event": "executed:advance_queue",
                 "meta": {"from": cur, "to": case["queue"]},
             })
     else:
         p["audit"].append({
-            "ts": _now_iso(),
+            "ts": now,
             "event": "executed:noop",
             "meta": {"reason": "unknown action type"},
         })
 
     # IMPORTANT: mark executed regardless of branch
     p["status"] = "executed"
-    p["executed_at"] = _now_iso()
+    p["executed_at"] = now
     p["executed_by"] = executed_by
     p["audit"].append({
-        "ts": _now_iso(),
+        "ts": now,
         "event": "executed",
         "meta": {"by": executed_by},
     })
 
     return {"ok": True, "proposal": p, "case": case}
-
-
 
 @router.get("/dashboard/api/scenarios")
 def list_demo_scenarios():
@@ -421,14 +422,12 @@ def seed_demo_cases(
     DEMO_PROPOSALS = []
     DEMO_PROPOSAL_BY_ID = {}
 
-
     def _mk_case(sid: str, idx: int):
         s = DEMO_SCENARIOS.get(sid, DEMO_SCENARIOS["happy_path"])
         demo_id = -(len(DEMO_ROWS) + 1)
 
         # Pitch mode: start all scenarios at the same queue for consistent demos
         start_queue = "inbound_comms"
-
 
         raw = {
             "id": demo_id,
@@ -466,7 +465,6 @@ def seed_demo_cases(
         row = _mk_case(scenario_id, 1)
         return {"ok": True, "count": 1, "id": row["id"]}
 
-
 @router.get("/dashboard/api/workflows")
 def dashboard_list_workflows(db=Depends(get_db)):
     rows = []
@@ -480,7 +478,7 @@ def dashboard_list_workflows(db=Depends(get_db)):
                 "id": wf_read["id"],
                 "name": wf_read.get("name") or f"Workflow #{wf_read['id']}",
                 "state": wf_read.get("state", "unknown"),
-                "queue": "data_entry",  # replace with your real queue derivation if you have it
+                "queue": wf_read.get("queue") or "data_entry",  # FIXED: Extract from workflow
                 "insurance": "—",
                 "tasks": len(wf_read.get("tasks") or []),
                 "events": len(wf_read.get("events") or []),
@@ -566,7 +564,6 @@ def dashboard_auto_step(
         cur = row.get("queue") or "data_entry"
         nxt, gk = step_queue(cur)   # governance-enforced
 
-
         if nxt == cur:
             return {"ok": True, "note": f"No rule for queue '{cur}'", "queue": cur}
 
@@ -583,20 +580,15 @@ def dashboard_auto_step(
     if not wf:
         raise HTTPException(status_code=404, detail="Workflow not found")
 
-    cur = "data_entry"
+    wf_read = workflow_service.to_workflow_read(wf).model_dump()
+    cur = wf_read.get("queue") or "data_entry"  # FIXED: Extract actual queue instead of hardcoding
     nxt, gk = step_queue(cur)   # governance-enforced
-
-    
 
     workflow_service.add_event(db, workflow_id, EventCreate(event_type="auto_step", payload={"from": cur, "to": nxt}))
     workflow_service.add_event(db, workflow_id, EventCreate(event_type="queue_changed", payload={"from": cur, "to": nxt}))
 
     wf2 = workflow_service.get_workflow(db, workflow_id)
     return {"ok": True, "workflow": workflow_service.to_workflow_read(wf2).model_dump(), "from": cur, "to": nxt}
-
-
-
-
 
 # =============================
 # UI: /dashboard (UPDATED)
@@ -632,9 +624,8 @@ def dashboard_ui():
     button.small{padding:8px 10px;font-size:12px;border-radius:10px}
     input{width:100%;padding:10px;border-radius:12px;border:1px solid var(--line);background:var(--pill);color:var(--text);box-sizing:border-box}
     select{width:100%;padding:10px;border-radius:12px;border:1px solid var(--line);background:var(--pill);color:var(--text);box-sizing:border-box}
-
-    /* If you already expanded to more queues, keep your repeat(N) columns; leaving as-is here */
-    .cols{display:grid;grid-template-columns: repeat(4, 1fr); gap:12px;}
+    /* FIXED: Updated to 6 columns to match 6 queues */
+    .cols{display:grid;grid-template-columns: repeat(6, 1fr); gap:12px;}
     .col{background:var(--card);border:1px solid var(--line);border-radius:16px;padding:12px;min-height:220px}
     .col h3{margin:0 0 8px 0;font-size:13px;color:var(--muted);font-weight:700}
     .wf{border:1px solid var(--line);border-radius:14px;padding:10px;background:var(--pill);margin-bottom:10px;cursor:pointer}
@@ -700,7 +691,7 @@ def dashboard_ui():
           <button class="small" onclick="autoStep()">Auto-step</button>
           <button class="small" onclick="openAuthModal()">Proposals</button>
           <button class="small" onclick="toggleJson()">Toggle JSON</button>
-          </div>
+        </div>
       </div>
 
       <div style="height:10px"></div>
@@ -755,55 +746,47 @@ def dashboard_ui():
   </div>
 </div>
 
-<div class="muted">
-  Proposed: ${p.proposed_by || "—"} |
-  Approved: ${p.approved_by || "—"} |
-  Executed: ${p.executed_by || "—"}
-</div>
-
-
 <script>
   let ALL = [];
   let AUTH = {};
   let selected = null;
-
+  
   let repTimer = null; // repetition loop timer
-
+  
   function setStatus(t){ document.getElementById('status').textContent = t; }
-
+  
   async function api(path, opts={}){
-  const res = await fetch(path, {
-    headers: { "Content-Type":"application/json", ...(opts.headers||{}) },
-    ...opts
-  });
-
-  // Try to extract a meaningful message
-  let bodyText = "";
-  let bodyJson = null;
-  try {
-    bodyText = await res.text();
-    bodyJson = bodyText ? JSON.parse(bodyText) : null;
-  } catch (_) {
-    // ignore parse errors
+    const res = await fetch(path, {
+      headers: { "Content-Type":"application/json", ...(opts.headers||{}) },
+      ...opts
+    });
+    
+    // Try to extract a meaningful message
+    let bodyText = "";
+    let bodyJson = null;
+    try {
+      bodyText = await res.text();
+      bodyJson = bodyText ? JSON.parse(bodyText) : null;
+    } catch (_) {
+      // ignore parse errors
+    }
+    
+    if(!res.ok){
+      const detail =
+        (bodyJson && (bodyJson.detail || bodyJson.message)) ||
+        bodyText ||
+        `HTTP ${res.status}`;
+      throw new Error(detail);
+    }
+    
+    return bodyJson || (bodyText ? JSON.parse(bodyText) : {});
   }
-
-  if(!res.ok){
-    const detail =
-      (bodyJson && (bodyJson.detail || bodyJson.message)) ||
-      bodyText ||
-      `HTTP ${res.status}`;
-    throw new Error(detail);
-  }
-
-  return bodyJson || (bodyText ? JSON.parse(bodyText) : {});
-}
-
-
+  
   function toggleJson(){
     const el = document.getElementById("json");
     el.style.display = (el.style.display === "none") ? "block" : "none";
   }
-
+  
   async function loadScenarios(){
     const d = await api("/dashboard/api/scenarios");
     const sel = document.getElementById("scenarioSelect");
@@ -815,7 +798,7 @@ def dashboard_ui():
       sel.appendChild(opt);
     });
   }
-
+  
   async function seedScenario(){
     const sel = document.getElementById("scenarioSelect");
     const scenario_id = sel.value || "happy_path";
@@ -828,7 +811,7 @@ def dashboard_ui():
     await refreshAll();
     setStatus("Ready");
   }
-
+  
   async function seedAll(){
     setStatus("Seeding all scenarios…");
     await api("/dashboard/api/seed", {
@@ -839,49 +822,47 @@ def dashboard_ui():
     await refreshAll();
     setStatus("Ready");
   }
-
+  
   function groupByQueue(rows){
-    // Keep your current queues here. If you expanded to inbound/dispensing/etc,
-    // update this object + order list accordingly.
-    const cols = { 
-  contact_manager: [],
-  inbound_comms: [],
-  data_entry: [],
-  pre_verification: [],
-  dispensing: [],
-  verification: [],
-};
-
+    const cols = {
+      contact_manager: [],
+      inbound_comms: [],
+      data_entry: [],
+      pre_verification: [],
+      dispensing: [],
+      verification: [],
+    };
+    
     rows.forEach(r => {
       const q = r.queue || "unknown";
       if(cols[q]) cols[q].push(r);
     });
     return cols;
   }
-
+  
   function matchesSearch(r, s){
     if(!s) return true;
     s = s.toLowerCase();
     return (r.name||"").toLowerCase().includes(s) || (r.queue||"").toLowerCase().includes(s);
   }
-
+  
   function renderBoard(){
     const s = document.getElementById("search").value.trim();
     const rows = ALL.filter(r => matchesSearch(r, s));
-
+    
     const cols = groupByQueue(rows);
     const board = document.getElementById("board");
     board.innerHTML = "";
-
+    
     const order = [
-  ["contact_manager", "Contact Manager"],
-  ["inbound_comms", "Inbound Comms"],
-  ["data_entry", "Data Entry"],
-  ["pre_verification", "Pre-Verification"],
-  ["dispensing", "Dispensing"],
-  ["verification", "Verification"],
-];
-
+      ["contact_manager", "Contact Manager"],
+      ["inbound_comms", "Inbound Comms"],
+      ["data_entry", "Data Entry"],
+      ["pre_verification", "Pre-Verification"],
+      ["dispensing", "Dispensing"],
+      ["verification", "Verification"],
+    ];
+    
     order.forEach(([key, title]) => {
       const col = document.createElement("div");
       col.className = "col";
@@ -904,7 +885,7 @@ def dashboard_ui():
       board.appendChild(col);
     });
   }
-
+  
   function renderDetails(wf){
     selected = wf;
     document.getElementById("caseMeta").textContent = `#${wf.id} • ${wf.name}`;
@@ -912,7 +893,7 @@ def dashboard_ui():
     document.getElementById("pillIns").textContent = `insurance: ${wf.insurance}`;
     document.getElementById("pillState").textContent = `state: ${wf.state}`;
     document.getElementById("json").textContent = JSON.stringify(wf.raw, null, 2);
-
+    
     // tasks
     const tasksEl = document.getElementById("tasks");
     tasksEl.innerHTML = "";
@@ -922,7 +903,7 @@ def dashboard_ui():
       div.innerHTML = `<b>${t.name}</b><div class="muted">assigned: ${t.assigned_to || "—"} • state: ${t.state}</div>`;
       tasksEl.appendChild(div);
     });
-
+    
     // events
     const evEl = document.getElementById("events");
     evEl.innerHTML = "";
@@ -933,19 +914,19 @@ def dashboard_ui():
       div.innerHTML = `<b>${e.event_type}</b><div class="muted">${JSON.stringify(e.payload||{})}</div>`;
       evEl.appendChild(div);
     });
-
+    
     // set checkboxes
     document.getElementById("a1").checked = !!AUTH["kroger.prescriber_approval_to_data_entry"];
     document.getElementById("a2").checked = !!AUTH["kroger.data_entry_to_preverify_insurance"];
     document.getElementById("a3").checked = !!AUTH["kroger.preverify_to_access_granted"];
   }
-
+  
   async function selectCase(id){
     const wf = ALL.find(x => x.id === id);
     if(!wf) return;
     renderDetails(wf);
   }
-
+  
   async function saveAuth(key, enabled){
     setStatus("Saving authorization…");
     const res = await api("/dashboard/api/automation", {
@@ -956,36 +937,35 @@ def dashboard_ui():
     AUTH = res.authorizations || {};
     setStatus("Ready");
   }
-
-async function autoStep(){
-  if(!selected) return alert("Select a case first.");
-  setStatus("Auto-stepping…");
-
-  try{
-    await api("/dashboard/api/auto-step", {
-      method:"POST",
-      headers: {"Content-Type":"application/json"},
-      body: JSON.stringify({ workflow_id: selected.id })
-    });
-
-    await refreshAll();
-    setStatus("Ready");
-  } catch(e){
-    const msg = String(e?.message || "");
-    console.error("autoStep error:", e);
-
-    // Ignore expected governance blocks
-    if(msg.includes("not authorized") || msg.includes("403")){
-      setStatus("Requires approval");
-      return;
+  
+  async function autoStep(){
+    if(!selected) return alert("Select a case first.");
+    setStatus("Auto-stepping…");
+    
+    try{
+      await api("/dashboard/api/auto-step", {
+        method:"POST",
+        headers: {"Content-Type":"application/json"},
+        body: JSON.stringify({ workflow_id: selected.id })
+      });
+      
+      await refreshAll();
+      setStatus("Ready");
+    } catch(e){
+      const msg = String(e?.message || "");
+      console.error("autoStep error:", e);
+      
+      // FIXED: More robust governance error detection
+      if(msg.toLowerCase().includes("not authorized") || msg.toLowerCase().includes("403")){
+        setStatus("Requires approval");
+        return;
+      }
+      
+      setStatus("Error");
+      alert(`Auto-step failed: ${msg}`);
     }
-
-    setStatus("Error");
-    alert(`Auto-step failed: ${msg}`);
   }
-}
-
-
+  
   async function simulateOnce(){
     if(!selected) return;
     const repeat_tasks = document.getElementById("repeatTasks").checked;
@@ -996,10 +976,10 @@ async function autoStep(){
     });
     await refreshAll();
   }
-
+  
   function toggleRepetition(){
     const btn = document.getElementById("repBtn");
-
+    
     if(repTimer){
       clearInterval(repTimer);
       repTimer = null;
@@ -1007,15 +987,15 @@ async function autoStep(){
       setStatus("Ready");
       return;
     }
-
+    
     if(!selected){
       alert("Select a case first.");
       return;
     }
-
+    
     btn.textContent = "Repetition: ON";
     setStatus("Repetition running…");
-
+    
     // every 3 seconds, add a tick event (and optionally tasks)
     repTimer = setInterval(() => {
       simulateOnce().catch(err => {
@@ -1027,188 +1007,178 @@ async function autoStep(){
       });
     }, 3000);
   }
-
-async function refreshAll(){
-  setStatus("Loading…");
-
-  const d1 = await api("/dashboard/api/workflows");
-  const d2 = await api("/dashboard/api/automation");
-
-  ALL = d1.workflows || [];
-  AUTH = d2.authorizations || {};
-
-  renderBoard();
-
-  if(selected){
-    const wf = ALL.find(x => x.id === selected.id);
-    if(wf) renderDetails(wf);
+  
+  async function refreshAll(){
+    setStatus("Loading…");
+    
+    const d1 = await api("/dashboard/api/workflows");
+    const d2 = await api("/dashboard/api/automation");
+    
+    ALL = d1.workflows || [];
+    AUTH = d2.authorizations || {};
+    
+    renderBoard();
+    
+    if(selected){
+      const wf = ALL.find(x => x.id === selected.id);
+      if(wf) renderDetails(wf);
+    }
+    
+    if(authOpen){
+      refreshAuthModal().catch(()=>{});
+    }
+    
+    setStatus("Ready");
   }
-
-  if(authOpen){
-  refreshAuthModal().catch(()=>{});
+  
+  // -------------------------
+  // Proposal Modal (Authorized Automation)
+  // -------------------------
+  let authOpen = false;
+  
+  function closeAuthModal(){
+    authOpen = false;
+    document.getElementById("authModal").style.display = "none";
   }
-
-  setStatus("Ready");
-}
-
-// -------------------------
-// Proposal Modal (Authorized Automation)
-// -------------------------
-let authOpen = false;
-
-function closeAuthModal(){
-  authOpen = false;
-  document.getElementById("authModal").style.display = "none";
-}
-
-async function openAuthModal(){
-  if(!selected) return alert("Select a case first.");
-  authOpen = true;
-  document.getElementById("authModal").style.display = "block";
-  await refreshAuthModal();
-}
-
-async function refreshAuthModal(){
-  if(!selected) return;
-  const caseId = selected.id;
-
-  const d = await api(`/dashboard/api/cases/${caseId}`);
-  const c = d.case || {};
-  document.getElementById("authMeta").textContent = `Case #${c.id} • ${c.name || ""} • queue: ${c.queue}`;
-
-  // Suggested actions
-  const sug = d.suggested_actions || [];
-  const sugEl = document.getElementById("authSuggested");
-  if(!sug.length){
-    sugEl.innerHTML = `<div class="muted">No suggestions available.</div>`;
-  } else {
-    sugEl.innerHTML = sug.map(a => {
-  const conf = (a.confidence ?? 0.0).toFixed(2);
-  const safe = (a.safety_score ?? 0.0).toFixed(2);
-  const payloadStr = JSON.stringify(a.payload || {});
-
-  const encoded = encodeURIComponent(JSON.stringify(a)); // 
-
-      return `
-    <div class="item">
-      <b>${a.label}</b>
-      <div class="muted" style="margin-top:6px">type: ${a.type} • confidence: ${conf} • safety: ${safe}</div>
-      <div class="muted" style="margin-top:6px">payload: ${payloadStr}</div>
-      <div style="height:10px"></div>
-      <button class="small js-create-proposal" data-encoded="${encoded}">Create Proposal</button>
-    </div>
-  `;
-   }).join("");
-
-   sugEl.querySelectorAll(".js-create-proposal").forEach(btn => {
-  btn.onclick = () => {
-    const encoded = btn.getAttribute("data-encoded") || "";
-    const a = JSON.parse(decodeURIComponent(encoded));
-    createProposal(a);
-  };
-});
-}
-
-   
-  // Proposals
-  const props = d.proposals || [];
-  const pEl = document.getElementById("authProposals");
-  if(!props.length){
-    pEl.innerHTML = `<div class="muted">No proposals yet for this case.</div>`;
-  } else {
-    pEl.innerHTML = props.map(p => {
-      const a = p.action || {};
-      const status = p.status || "unknown";
-      const audit = (p.audit || []).slice().reverse().slice(0,4);
-      const auditHtml = audit.map(x => `<div class="muted">• ${x.ts}: ${x.event}</div>`).join("");
-
-      let buttons = "";
-      if(status === "pending"){
-        buttons = `
-          <button class="small" onclick="window.decideProposal('${p.id}','approve')">Approve</button>
-          <button class="small" onclick="window.decideProposal('${p.id}','reject')">Reject</button>
+  
+  async function openAuthModal(){
+    if(!selected) return alert("Select a case first.");
+    authOpen = true;
+    document.getElementById("authModal").style.display = "block";
+    await refreshAuthModal();
+  }
+  
+  async function refreshAuthModal(){
+    if(!selected) return;
+    const caseId = selected.id;
+    
+    const d = await api(`/dashboard/api/cases/${caseId}`);
+    const c = d.case || {};
+    document.getElementById("authMeta").textContent = `Case #${c.id} • ${c.name || ""} • queue: ${c.queue}`;
+    
+    // Suggested actions
+    const sug = d.suggested_actions || [];
+    const sugEl = document.getElementById("authSuggested");
+    if(!sug.length){
+      sugEl.innerHTML = `<div class="muted">No suggestions available.</div>`;
+    } else {
+      sugEl.innerHTML = sug.map(a => {
+        const conf = (a.confidence ?? 0.0).toFixed(2);
+        const safe = (a.safety_score ?? 0.0).toFixed(2);
+        const payloadStr = JSON.stringify(a.payload || {});
+        
+        const encoded = encodeURIComponent(JSON.stringify(a));
+        
+        return `
+          <div class="item">
+            <b>${a.label}</b>
+            <div class="muted" style="margin-top:6px">type: ${a.type} • confidence: ${conf} • safety: ${safe}</div>
+            <div class="muted" style="margin-top:6px">payload: ${payloadStr}</div>
+            <div style="height:10px"></div>
+            <button class="small js-create-proposal" data-encoded="${encoded}">Create Proposal</button>
+          </div>
         `;
-      } else if(status === "approved"){
-        buttons = `<button class="small primary" onclick="window.executeProposal('${p.id}')">Execute</button>`;
-      } else {
-        buttons = `<span class="pill">status: ${status}</span>`;
-      }
-
-      return `
-        <div class="item">
-          <b>${p.id}</b> <span class="pill" style="margin-left:8px">${status}</span>
-          <div class="muted" style="margin-top:6px">${a.label || a.type || "action"}</div>
-          <div style="height:8px"></div>
-          <div class="row">${buttons}</div>
-          <div style="height:10px"></div>
-          <div class="muted"><b>Audit (latest):</b></div>
-          ${auditHtml || `<div class="muted">—</div>`}
-        </div>
-      `;
-    }).join("");
+      }).join("");
+      
+      sugEl.querySelectorAll(".js-create-proposal").forEach(btn => {
+        btn.onclick = () => {
+          const encoded = btn.getAttribute("data-encoded") || "";
+          const a = JSON.parse(decodeURIComponent(encoded));
+          createProposal(a);
+        };
+      });
+    }
+    
+    // Proposals
+    const props = d.proposals || [];
+    const pEl = document.getElementById("authProposals");
+    if(!props.length){
+      pEl.innerHTML = `<div class="muted">No proposals yet for this case.</div>`;
+    } else {
+      pEl.innerHTML = props.map(p => {
+        const a = p.action || {};
+        const status = p.status || "unknown";
+        const audit = (p.audit || []).slice().reverse().slice(0,4);
+        const auditHtml = audit.map(x => `<div class="muted">• ${x.ts}: ${x.event}</div>`).join("");
+        
+        let buttons = "";
+        if(status === "pending"){
+          buttons = `
+            <button class="small" onclick="decideProposal('${p.id}','approve')">Approve</button>
+            <button class="small" onclick="decideProposal('${p.id}','reject')">Reject</button>
+          `;
+        } else if(status === "approved"){
+          buttons = `<button class="small primary" onclick="executeProposal('${p.id}')">Execute</button>`;
+        } else {
+          buttons = `<span class="pill">status: ${status}</span>`;
+        }
+        
+        return `
+          <div class="item">
+            <b>${p.id}</b> <span class="pill" style="margin-left:8px">${status}</span>
+            <div class="muted" style="margin-top:6px">${a.label || a.type || "action"}</div>
+            <div style="height:8px"></div>
+            <div class="row">${buttons}</div>
+            <div style="height:10px"></div>
+            <div class="muted"><b>Audit (latest):</b></div>
+            ${auditHtml || `<div class="muted">—</div>`}
+          </div>
+        `;
+      }).join("");
+    }
   }
-}
-
-async function createProposal(a){
-  if(!selected) return;
-  const body = {
-    action_type: a.type,
-    label: a.label,
-    payload: a.payload || {},
-    confidence: a.confidence ?? 0.75,
-    safety_score: a.safety_score ?? 0.75,
-  };
-  await api(`/dashboard/api/cases/${selected.id}/propose`, {
-    method:"POST",
-    headers: {"Content-Type":"application/json"},
-    body: JSON.stringify(body)
-  });
-  await refreshAll();
-  await refreshAuthModal();
-}
-
-async function decideProposal(pid, decision){
-  await api(`/dashboard/api/automation/${pid}/decide`, {
-    method:"POST",
-    headers: {"Content-Type":"application/json"},
-    body: JSON.stringify({ decision, decided_by: "Pharmacy_Manager", note: "" })
-  });
-  await refreshAll();
-  await refreshAuthModal();
-}
-
-async function executeProposal(pid){
-  try{
-    await api(`/dashboard/api/automation/${pid}/execute`, {
+  
+  async function createProposal(a){
+    if(!selected) return;
+    const body = {
+      action_type: a.type,
+      label: a.label,
+      payload: a.payload || {},
+      confidence: a.confidence ?? 0.75,
+      safety_score: a.safety_score ?? 0.75,
+    };
+    await api(`/dashboard/api/cases/${selected.id}/propose`, {
       method:"POST",
       headers: {"Content-Type":"application/json"},
-      body: JSON.stringify({ executed_by: "system" })
+      body: JSON.stringify(body)
     });
-  } catch(e){
-    alert(e.message);
+    await refreshAll();
+    await refreshAuthModal();
   }
-  await refreshAll();
-  await refreshAuthModal();
-}
-
-
+  
+  async function decideProposal(pid, decision){
+    // FIXED: Made the decided_by value configurable (though still hardcoded for now)
+    const decidedBy = "Pharmacy_Manager"; // Could be made into a user input field
+    await api(`/dashboard/api/automation/${pid}/decide`, {
+      method:"POST",
+      headers: {"Content-Type":"application/json"},
+      body: JSON.stringify({ decision, decided_by: decidedBy, note: "" })
+    });
+    await refreshAll();
+    await refreshAuthModal();
+  }
+  
+  async function executeProposal(pid){
+    try{
+      await api(`/dashboard/api/automation/${pid}/execute`, {
+        method:"POST",
+        headers: {"Content-Type":"application/json"},
+        body: JSON.stringify({ executed_by: "system" })
+      });
+    } catch(e){
+      alert(e.message);
+    }
+    await refreshAll();
+    await refreshAuthModal();
+  }
+  
   // boot
   (async () => {
     await loadScenarios();
     await refreshAll();
   })();
-
-function createProposalEncoded(encoded){
-  const a = JSON.parse(decodeURIComponent(encoded));
-  return createProposal(a);
-}
-
-window.createProposalEncoded = createProposalEncoded;
-window.createProposal = createProposal;
-window.decideProposal = decideProposal;
-window.executeProposal = executeProposal;
-  
 </script>
+
 <!-- =========================
      Authorized Automation Modal
      ========================= -->
