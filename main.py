@@ -29,6 +29,7 @@ from services import rules as rules_service
 from services import workflow as workflow_service
 
 from enterprise.execute import router as enterprise_router
+from src.enterprise.ame import router as ame_router
 from services.kroger_retail_pack import router as kroger_router
 from services.demo_hub import router as demo_router
 from services.bladnir_dashboard import router as dashboard_router
@@ -51,6 +52,7 @@ app.include_router(kroger_router)
 app.include_router(demo_router)
 app.include_router(dashboard_router)
 app.include_router(enterprise_router)
+app.include_router(ame_router)
 
 # Environment-based CORS configuration
 app.add_middleware(
