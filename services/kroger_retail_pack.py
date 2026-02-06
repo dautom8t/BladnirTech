@@ -18,6 +18,8 @@ How to use:
 
 from __future__ import annotations
 
+import logging
+import uuid
 from typing import Any, Dict, List, Optional
 
 from fastapi import APIRouter, Body, Depends
@@ -33,9 +35,28 @@ from models.schemas import (
     WorkflowState,
 )
 from services import workflow as workflow_service
+from src.enterprise.ame.service import log_event as _ame_log_event
+from src.enterprise.ame.models import AMEEventType
 
+logger = logging.getLogger(__name__)
 
 router = APIRouter(tags=["kroger"])
+
+
+# -------------------------
+# AME Trust Integration
+# -------------------------
+
+_AME_SITE = "kroger_demo"
+
+
+def _ame_safe(db, **kwargs):
+    """Log AME trust event. Non-blocking: failures are logged but never break the workflow."""
+    try:
+        return _ame_log_event(db, tenant_id="default", site_id=_AME_SITE, **kwargs)
+    except Exception as exc:
+        logger.warning("AME event skipped: %s", exc)
+        return None
 
 
 # -------------------------
@@ -201,6 +222,22 @@ def kroger_prescriber_approval(
     # Optional: create explicit operational task in case you want it visible
     _add_task(db, workflow_id, "Data Entry: Enter SIG / Qty / Days Supply", "Data Entry")
 
+    # --- AME trust tracking: prescriber approval is a successful queue advance ---
+    pid = f"kroger-{uuid.uuid4().hex[:8]}"
+    _ame_safe(db, queue="contact_manager", action_type="advance_queue",
+              event_type=AMEEventType.PROPOSAL_CREATED.value,
+              proposal_id=pid, predicted_confidence=0.88, predicted_safety=0.95,
+              predicted_time_saved_sec=120.0,
+              features={"method": method, "rx_ref": rx_ref},
+              context={"transition": "contact_manager→data_entry"})
+    _ame_safe(db, queue="contact_manager", action_type="advance_queue",
+              event_type=AMEEventType.PROPOSAL_DECIDED.value,
+              proposal_id=pid, decision="approve", decision_by="prescriber",
+              decision_reason="Rx received and approved")
+    _ame_safe(db, queue="contact_manager", action_type="advance_queue",
+              event_type=AMEEventType.OUTCOME.value,
+              proposal_id=pid, outcome_success=True, observed_time_saved_sec=90.0)
+
     wf = workflow_service.get_workflow(db, workflow_id)
     return workflow_service.to_workflow_read(wf)
 
@@ -236,7 +273,9 @@ def kroger_submit_preverification(
         {"payer": payer, "result": insurance_result},
     )
 
-    if insurance_result == "accepted":
+    is_accepted = insurance_result == "accepted"
+
+    if is_accepted:
         # Move into Pre-Verification queue for pharmacist review
         _add_event(
             db,
@@ -255,6 +294,26 @@ def kroger_submit_preverification(
         )
         _add_task(db, workflow_id, "Resolve Insurance Rejection", "Store Tech")
         _add_task(db, workflow_id, "Patient Outreach (rejection)", "Store Tech")
+
+    # --- AME trust tracking: insurance adjudication outcome ---
+    pid = f"kroger-{uuid.uuid4().hex[:8]}"
+    _ame_safe(db, queue="data_entry", action_type="insurance_adjudication",
+              event_type=AMEEventType.PROPOSAL_CREATED.value,
+              proposal_id=pid, predicted_confidence=0.82, predicted_safety=0.90,
+              predicted_time_saved_sec=180.0,
+              features={"payer": payer, "sig": sig, "days_supply": days_supply},
+              context={"transition": "data_entry→pre_verification"})
+    _ame_safe(db, queue="data_entry", action_type="insurance_adjudication",
+              event_type=AMEEventType.PROPOSAL_DECIDED.value,
+              proposal_id=pid,
+              decision="approve" if is_accepted else "reject",
+              decision_by="system",
+              decision_reason=f"Insurance {insurance_result}")
+    _ame_safe(db, queue="data_entry", action_type="insurance_adjudication",
+              event_type=AMEEventType.OUTCOME.value,
+              proposal_id=pid, outcome_success=is_accepted,
+              observed_error=not is_accepted,
+              observed_time_saved_sec=150.0 if is_accepted else 0.0)
 
     wf = workflow_service.get_workflow(db, workflow_id)
     return workflow_service.to_workflow_read(wf)
@@ -279,13 +338,32 @@ def kroger_pharmacist_preverify(
     )
 
     wf = workflow_service.get_workflow(db, workflow_id)
-    if wf and decision == "approved":
+    is_approved = decision == "approved"
+    if wf and is_approved:
         # For demo purposes, you can optionally reflect progress in workflow state:
         # (Keep your enum as-is; DISPENSED is a reasonable "ready for fill" proxy in demo.)
         wf.state = WorkflowState.ACCESS_GRANTED  # indicates cleared/ready in your state machine
         wf.update_timestamp()
         db.commit()
         db.refresh(wf)
+
+    # --- AME trust tracking: pharmacist clinical decision ---
+    pid = f"kroger-{uuid.uuid4().hex[:8]}"
+    _ame_safe(db, queue="pre_verification", action_type="pharmacist_review",
+              event_type=AMEEventType.PROPOSAL_CREATED.value,
+              proposal_id=pid, predicted_confidence=0.85, predicted_safety=0.92,
+              predicted_time_saved_sec=60.0,
+              context={"transition": "pre_verification→dispensing"})
+    _ame_safe(db, queue="pre_verification", action_type="pharmacist_review",
+              event_type=AMEEventType.PROPOSAL_DECIDED.value,
+              proposal_id=pid,
+              decision="approve" if is_approved else "reject",
+              decision_by="pharmacist",
+              decision_reason=notes or ("Cleared for dispensing" if is_approved else "Rejected"))
+    _ame_safe(db, queue="pre_verification", action_type="pharmacist_review",
+              event_type=AMEEventType.OUTCOME.value,
+              proposal_id=pid, outcome_success=is_approved,
+              observed_time_saved_sec=45.0 if is_approved else 0.0)
 
     return workflow_service.to_workflow_read(wf)
 
@@ -327,7 +405,8 @@ def kroger_demo_ui():
 <header>
   <b>Kroger Retail Pack</b>
   <span class="muted">Bladnir Tech • Click-through demo</span>
-  <span class="muted" style="margin-left:auto" id="status">Loading…</span>
+  <a href="/ame/dashboard" class="muted" style="margin-left:auto; text-decoration:underline; cursor:pointer;">AME Trust Dashboard</a>
+  <span class="muted" id="status">Loading…</span>
 </header>
 
 <main>
@@ -389,6 +468,11 @@ def kroger_demo_ui():
         <button class="small" onclick="pharmDecision('approved')">Approve</button>
         <button class="small secondary" onclick="pharmDecision('rejected')">Reject</button>
       </div>
+
+      <div style="height:16px"></div>
+      <hr style="border:none;border-top:1px solid #e5e5e5;" />
+      <div style="height:10px"></div>
+      <button class="secondary" style="width:100%" onclick="resetCase()">Reset — Start New Case</button>
     </div>
   </div>
 
@@ -459,6 +543,23 @@ def kroger_demo_ui():
 <script>
   let selectedWorkflowId = null;
   let scenarioDefaults = {};
+
+  function resetCase(){
+    selectedWorkflowId = null;
+    document.getElementById("wfBadge").textContent = "No workflow";
+    document.getElementById("state").textContent = "—";
+    document.getElementById("meta").textContent = "No workflow selected.";
+    document.getElementById("queue").textContent = "—";
+    document.getElementById("insurance").textContent = "—";
+    document.getElementById("statusText").textContent = "—";
+    document.getElementById("tasks").innerHTML = "";
+    document.getElementById("events").innerHTML = "";
+    document.getElementById("taskCount").textContent = "0";
+    document.getElementById("eventCount").textContent = "0";
+    document.getElementById("out").textContent = "{}";
+    autofillDefaults();
+    setStatus("Reset — ready for a new case");
+  }
 
   function setStatus(msg) { document.getElementById("status").textContent = msg; }
 
