@@ -1,5 +1,9 @@
 """
 Enterprise authentication with secure key management, audit logging, and timing-safe comparison.
+
+In **demo mode** (``ENVIRONMENT`` unset or set to ``demo``), authentication is
+bypassed and every request receives a ``UserContext(user_id="demo", role="admin")``.
+In production the original API-key flow is enforced.
 """
 
 import hashlib
@@ -13,6 +17,9 @@ from fastapi import Header, HTTPException, Depends, Request
 
 logger = logging.getLogger(__name__)
 
+# Import central settings
+from config import settings as _settings
+
 
 @dataclass
 class UserContext:
@@ -20,6 +27,10 @@ class UserContext:
     user_id: str  # Identifier for the key (e.g., "admin", "service_account_1")
     role: str
     key_id: str  # Last 8 chars of key hash for logging (safe to log)
+
+
+# Shared demo context returned for every request when auth is disabled.
+_DEMO_USER = UserContext(user_id="demo", role="admin", key_id="demo0000")
 
 
 class AuthenticationError(Exception):
@@ -34,15 +45,15 @@ class AuthenticationError(Exception):
 def _load_api_keys() -> dict[str, tuple[str, str]]:
     """
     Load and validate API keys from environment.
-    
+
     Returns:
         dict mapping hashed keys to (user_id, role) tuples
-        
+
     Raises:
         AuthenticationError: If required keys are missing or invalid
     """
     keys = {}
-    
+
     # Load admin key (required)
     admin_key = os.getenv("BLADNIR_ADMIN_KEY")
     if not admin_key:
@@ -50,18 +61,18 @@ def _load_api_keys() -> dict[str, tuple[str, str]]:
             "CRITICAL: BLADNIR_ADMIN_KEY environment variable not set. "
             "Application cannot start without authentication configured."
         )
-    
+
     if len(admin_key) < 32:
         raise AuthenticationError(
             "CRITICAL: BLADNIR_ADMIN_KEY must be at least 32 characters. "
             f"Current length: {len(admin_key)}"
         )
-    
+
     # Hash the key for timing-safe comparison
     admin_key_hash = hashlib.sha256(admin_key.encode()).hexdigest()
     keys[admin_key_hash] = ("admin", "admin")
     logger.info(f"Loaded admin key (hash: {admin_key_hash[:8]}...)")
-    
+
     # Load additional service account keys (optional)
     # Format: BLADNIR_KEY_<NAME>=<key>:<role>
     # Example: BLADNIR_KEY_MONITOR=abc123def456:read_only
@@ -69,38 +80,46 @@ def _load_api_keys() -> dict[str, tuple[str, str]]:
         if env_var.startswith("BLADNIR_KEY_"):
             try:
                 name = env_var.replace("BLADNIR_KEY_", "").lower()
-                
+
                 if ":" not in value:
                     logger.warning(f"Skipping {env_var}: missing role (format: key:role)")
                     continue
-                
+
                 key, role = value.split(":", 1)
-                
+
                 if len(key) < 32:
                     logger.warning(f"Skipping {env_var}: key too short (min 32 chars)")
                     continue
-                
+
                 key_hash = hashlib.sha256(key.encode()).hexdigest()
                 keys[key_hash] = (name, role)
                 logger.info(f"Loaded service account '{name}' with role '{role}' (hash: {key_hash[:8]}...)")
-                
+
             except Exception as e:
                 logger.error(f"Failed to load {env_var}: {e}")
                 continue
-    
+
     if not keys:
         raise AuthenticationError("No valid API keys loaded")
-    
+
     logger.info(f"Authentication initialized with {len(keys)} valid key(s)")
     return keys
 
 
-# Load keys at module import (fails fast if misconfigured)
-try:
-    API_KEYS = _load_api_keys()
-except AuthenticationError as e:
-    logger.critical(str(e))
-    raise
+# Load keys at module import.
+# In demo/development mode, missing keys are not fatal — we fall back to a
+# built-in demo key so the app can start without any environment variables.
+if _settings.auth_enabled:
+    try:
+        API_KEYS = _load_api_keys()
+    except AuthenticationError as e:
+        logger.critical(str(e))
+        raise
+else:
+    # Demo / development: provide a built-in key so the app boots cleanly.
+    _demo_hash = hashlib.sha256(_settings.demo_admin_key.encode()).hexdigest()
+    API_KEYS = {_demo_hash: ("demo", "admin")}
+    logger.info("Auth running in DEMO mode — authentication is bypassed for all requests")
 
 
 # =====================================
@@ -138,24 +157,31 @@ def require_auth(
 ) -> UserContext:
     """
     Authentication dependency for FastAPI endpoints.
-    
+
+    In demo mode (``auth_enabled=False``) every request is treated as an
+    authenticated admin — no header required.
+
     Usage:
         @app.get("/protected")
         def protected_endpoint(user: UserContext = Depends(require_auth)):
             return {"message": f"Hello {user.user_id}"}
-    
+
     Args:
         request: FastAPI request object (for IP logging)
         x_api_key: API key from X-API-Key header
-        
+
     Returns:
         UserContext with user details
-        
+
     Raises:
-        HTTPException: 401 if authentication fails
+        HTTPException: 401 if authentication fails (production only)
     """
+    # --- demo bypass ---
+    if not _settings.auth_enabled:
+        return _DEMO_USER
+
     client_ip = request.client.host if request.client else "unknown"
-    
+
     # Check if key provided
     if not x_api_key:
         logger.warning(f"Authentication failed: Missing API key (IP: {client_ip})")
@@ -164,10 +190,10 @@ def require_auth(
             detail="Authentication required",
             headers={"WWW-Authenticate": "ApiKey"},
         )
-    
+
     # Verify key (timing-safe)
     result = _verify_api_key(x_api_key)
-    
+
     if not result:
         logger.warning(
             f"Authentication failed: Invalid API key "
@@ -179,15 +205,15 @@ def require_auth(
             detail="Authentication required",
             headers={"WWW-Authenticate": "ApiKey"},
         )
-    
+
     user_id, role, key_id = result
-    
+
     # Log successful authentication (safe to log key_id, it's just a hash prefix)
     logger.info(
         f"Authentication successful: user={user_id}, role={role}, "
         f"key_id={key_id}, IP={client_ip}"
     )
-    
+
     return UserContext(user_id=user_id, role=role, key_id=key_id)
 
 

@@ -5,7 +5,6 @@ FastAPI application exposing the Bladnir Tech API.
 from __future__ import annotations
 
 import logging
-import os
 from typing import List
 
 from fastapi import Body, Depends, FastAPI, HTTPException, Path, status
@@ -13,6 +12,7 @@ from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import RedirectResponse
 from sqlalchemy.orm import Session
 
+from config import settings
 from models.database import Base, engine, get_db
 from models.schemas import (
     EventCreate,
@@ -36,8 +36,8 @@ from services.bladnir_dashboard import router as dashboard_router
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
 
-# FIXED: Only create tables in development
-if os.getenv("ENVIRONMENT") == "development":
+# Auto-create tables in demo and development modes
+if settings.auto_create_tables:
     try:
         Base.metadata.create_all(bind=engine)
         logger.info("Database tables created successfully")
@@ -52,11 +52,10 @@ app.include_router(demo_router)
 app.include_router(dashboard_router)
 app.include_router(enterprise_router)
 
-# FIXED: Environment-based CORS configuration
-allowed_origins = os.getenv("CORS_ORIGINS", "http://localhost:3000").split(",")
+# Environment-based CORS configuration
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=allowed_origins,
+    allow_origins=settings.cors_origins,
     allow_credentials=True,
     allow_methods=["*"],
     allow_headers=["*"],
@@ -64,7 +63,25 @@ app.add_middleware(
 
 @app.get("/health")
 def health() -> dict:
-    return {"status": "ok"}
+    from services.cache import cache
+    from services.storage import storage
+    return {
+        "status": "ok",
+        "mode": settings.mode.value,
+        "cache": cache.stats(),
+        "storage": storage.info(),
+    }
+
+@app.get("/api/settings")
+def api_settings() -> dict:
+    """Expose non-sensitive runtime settings so the UI can adapt."""
+    return {
+        "mode": settings.mode.value,
+        "auth_enabled": settings.auth_enabled,
+        "cache_backend": settings.cache_backend,
+        "storage_backend": settings.storage_backend,
+        "auto_seed": settings.auto_seed,
+    }
 
 @app.get("/")
 def home() -> RedirectResponse:
@@ -195,3 +212,17 @@ def api_list_rules(db: Session = Depends(get_db)):
         )
         for r in rules
     ]
+
+
+# =============================
+# Startup: auto-seed in demo mode
+# =============================
+
+@app.on_event("startup")
+async def _on_startup() -> None:
+    logger.info(f"BladnirTech starting in {settings.mode.value} mode")
+    if settings.is_demo and settings.auto_seed:
+        from services.bladnir_dashboard import seed_demo_cases, DEMO_ROWS
+        if not DEMO_ROWS:
+            seed_demo_cases(scenario_id="happy_path", seed_all=True)
+            logger.info(f"Auto-seeded {len(DEMO_ROWS)} demo cases on startup")

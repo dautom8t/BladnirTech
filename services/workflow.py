@@ -27,6 +27,7 @@ from models.schemas import (
     WorkflowRead,
     WorkflowState,
 )
+from services.cache import cache
 from services.rules import evaluate_rules_for_workflow
 
 
@@ -112,12 +113,20 @@ def create_workflow(db: Session, workflow_in: WorkflowCreate) -> Workflow:
 
     db.commit()
     db.refresh(workflow)
+    cache.delete(f"workflow:{workflow.id}")
     return workflow
 
 
 def get_workflow(db: Session, workflow_id: int) -> Optional[Workflow]:
-    """Retrieve a workflow by ID."""
-    return db.query(Workflow).filter(Workflow.id == workflow_id).first()
+    """Retrieve a workflow by ID (cache-backed in demo mode)."""
+    cache_key = f"workflow:{workflow_id}"
+    cached = cache.get(cache_key)
+    if cached is not None:
+        return cached
+    wf = db.query(Workflow).filter(Workflow.id == workflow_id).first()
+    if wf is not None:
+        cache.set(cache_key, wf, ttl=30)
+    return wf
 
 
 def list_workflows(db: Session) -> List[Workflow]:
@@ -146,6 +155,7 @@ def add_task(db: Session, workflow_id: int, task_in: TaskCreate) -> Task:
     db.commit()
     db.refresh(workflow)
     db.refresh(task)
+    cache.delete(f"workflow:{workflow_id}")
     return task
 
 
@@ -169,6 +179,7 @@ def add_event(db: Session, workflow_id: int, event_in: EventCreate) -> Event:
     db.commit()
     db.refresh(workflow)
     db.refresh(event)
+    cache.delete(f"workflow:{workflow_id}")
     return event
 
 
@@ -193,6 +204,7 @@ def update_task_state(db: Session, workflow_id: int, task_id: int, new_state: Ta
     db.commit()
     db.refresh(workflow)
     db.refresh(task)
+    cache.delete(f"workflow:{workflow_id}")
     return task
 
 

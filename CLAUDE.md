@@ -11,17 +11,45 @@ BladnirTech is a **workflow orchestration middleware platform** built with FastA
 - **Server:** Uvicorn 0.29
 - **ORM:** SQLAlchemy 2.0+
 - **Validation:** Pydantic 2.6+
-- **Database:** SQLite (dev), PostgreSQL or MySQL (production)
+- **Database:** SQLite (demo/dev), PostgreSQL or MySQL (production)
+
+## Unified Codebase, Different Environments
+
+The same codebase runs in **demo**, **development**, and **production** modes controlled by the `ENVIRONMENT` variable. Each mode swaps backend implementations via abstraction layers:
+
+| Component | Demo (default) | Production |
+|---|---|---|
+| **Database** | SQLite | PostgreSQL / MySQL |
+| **Cache** | In-memory dict (TTL) | Redis |
+| **Storage** | Local filesystem | S3 / Cloud |
+| **Auth** | Bypassed (auto-admin) | API key + RBAC |
+| **Data seeding** | Auto-seeds on startup | Manual |
+| **Table creation** | Automatic | Manual migration |
+
+### Running Each Mode
+
+```bash
+# Demo (zero config, just works):
+uvicorn main:app --reload
+
+# Development (requires BLADNIR_ADMIN_KEY):
+ENVIRONMENT=development BLADNIR_ADMIN_KEY=<32+ chars> uvicorn main:app --reload
+
+# Production:
+ENVIRONMENT=production DATABASE_URL=postgresql://... BLADNIR_ADMIN_KEY=<32+ chars> uvicorn main:app
+```
 
 ## Repository Structure
 
 ```
 BladnirTech/
-├── main.py                         # FastAPI app entry point, core API routes
+├── main.py                         # FastAPI app entry point, core API routes, startup hooks
+├── config.py                       # Centralized settings (AppMode, env-var parsing)
 ├── requirements.txt                # Python dependencies
 ├── README.md                       # Project readme
+├── CLAUDE.md                       # This file
 ├── enterprise/                     # Enterprise features
-│   ├── auth.py                     # API key auth, RBAC, rate limiting
+│   ├── auth.py                     # API key auth, RBAC, rate limiting, demo bypass
 │   ├── governance.py               # Governance gates (proposal-approval flows)
 │   ├── audit.py                    # Audit logging to JSONL files
 │   └── execute.py                  # Governed execution router (/enterprise/*)
@@ -30,45 +58,33 @@ BladnirTech/
 │   ├── schemas.py                  # Pydantic request/response models + ORM models
 │   └── rules.py                    # Rule ORM model (condition/action pairs)
 └── services/                       # Business logic
-    ├── workflow.py                  # Workflow CRUD operations
+    ├── workflow.py                  # Workflow CRUD (cache-backed reads)
     ├── rules.py                    # Rules engine (evaluation, CRUD)
+    ├── cache.py                    # Cache abstraction (memory / Redis)
+    ├── storage.py                  # Storage abstraction (local / S3)
     ├── integration.py              # External system integration helpers
     ├── kroger_retail_pack.py       # Kroger pharmacy demo scenario (/kroger/*)
     ├── bladnir_dashboard.py        # Dashboard UI + API (/dashboard/*)
     └── demo_hub.py                 # Demo hub landing page (/demo)
 ```
 
-## Running the Application
-
-### Install dependencies
-
-```bash
-pip install -r requirements.txt
-```
-
-### Development
-
-```bash
-ENVIRONMENT=development uvicorn main:app --reload
-```
-
-Setting `ENVIRONMENT=development` enables auto-creation of database tables via `Base.metadata.create_all()`.
-
-### Production
-
-```bash
-uvicorn main:app --host 0.0.0.0 --port 8000
-```
-
 ## Environment Variables
 
 | Variable | Default | Description |
 |---|---|---|
-| `ENVIRONMENT` | (none) | Set to `development` to auto-create DB tables |
+| `ENVIRONMENT` | `demo` | `demo`, `development`, or `production` |
 | `DATABASE_URL` | `sqlite:///./BladnirTech.db` | Database connection string |
-| `BLADNIR_ADMIN_KEY` | (required in prod) | Admin API key (min 32 chars) |
+| `BLADNIR_ADMIN_KEY` | (built-in for demo) | Admin API key (min 32 chars, required in prod) |
 | `BLADNIR_KEY_<NAME>` | (optional) | Service account keys, format `key:role` |
 | `CORS_ORIGINS` | `http://localhost:3000` | Comma-separated allowed origins |
+| `CACHE_BACKEND` | `memory` | `memory` or `redis` |
+| `REDIS_URL` | `redis://localhost:6379/0` | Redis connection (when `CACHE_BACKEND=redis`) |
+| `CACHE_TTL` | `300` | Default cache TTL in seconds |
+| `STORAGE_BACKEND` | `local` | `local` or `s3` |
+| `STORAGE_LOCAL_DIR` | `./data/files` | Local file storage root |
+| `S3_BUCKET` | (none) | S3 bucket name (when `STORAGE_BACKEND=s3`) |
+| `S3_REGION` | `us-east-1` | AWS region for S3 |
+| `AUTO_SEED` | `true` | Auto-seed demo data on startup (demo mode) |
 | `DB_POOL_SIZE` | `5` | Connection pool size (PostgreSQL/MySQL) |
 | `DB_MAX_OVERFLOW` | `10` | Max pool overflow connections |
 | `DB_POOL_TIMEOUT` | `30` | Pool timeout in seconds |
@@ -80,7 +96,8 @@ uvicorn main:app --host 0.0.0.0 --port 8000
 
 ### Core Workflow API (`main.py`)
 
-- `GET /health` — Health check
+- `GET /health` — Health check (includes cache stats, storage info, mode)
+- `GET /api/settings` — Non-sensitive runtime settings for UI adaptation
 - `POST /api/workflows` — Create workflow
 - `GET /api/workflows` — List workflows
 - `GET /api/workflows/{id}` — Get workflow by ID
@@ -122,20 +139,29 @@ FastAPI Routes (main.py + routers)
         ↓
 Business Logic (services/)
         ↓
+Abstraction Layer (cache.py, storage.py)
+        ↓
 ORM Models + Pydantic Schemas (models/)
         ↓
-SQLAlchemy Engine → SQLite / PostgreSQL / MySQL
+config.py (Settings singleton)
+        ↓
+SQLite / PostgreSQL    Memory / Redis    Local / S3
 ```
 
 ### Key Patterns
 
+- **Unified Config:** `config.py` exposes a frozen `Settings` dataclass derived from environment variables. Import `settings` anywhere.
 - **Dependency Injection:** FastAPI `Depends()` for DB sessions and auth
+- **Demo Auth Bypass:** When `auth_enabled=False` (demo mode), `require_auth` returns a built-in admin `UserContext` — no API key needed
+- **Cache Abstraction:** `services/cache.py` — `MemoryCache` (demo) or `RedisCache` (prod). Workflow reads are cache-backed with 30s TTL; writes invalidate.
+- **Storage Abstraction:** `services/storage.py` — `LocalStorage` (demo) or `S3Storage` (prod). Directory traversal protected.
 - **RBAC:** API key auth with timing-safe comparison (HMAC) via `enterprise/auth.py`
 - **Governance Gates:** Persistent JSON-backed authorization gates with proposal-approval workflow
 - **Audit-First:** All significant actions logged to `logs/audit/audit_log.jsonl` (JSONL, thread-safe, auto-rotating)
 - **Rules Engine:** Condition/action pairs evaluated against workflow context (uses `eval()`/`exec()` — demo only, not production-safe)
 - **Multi-DB:** SQLAlchemy abstracts SQLite (NullPool) vs PostgreSQL/MySQL (connection pooling + SSL)
 - **Demo Workflows:** In-memory workflows use negative IDs; DB workflows use positive IDs
+- **Auto-Seed:** In demo mode, all scenarios are seeded automatically at startup via `app.on_event("startup")`
 
 ### Database Models
 
@@ -166,11 +192,20 @@ State transitions use enums: `WorkflowState`, `TaskState` (defined in `models/sc
 5. Use `Depends(get_db)` for database access
 6. Use `Depends(require_auth)` or `Depends(require_role("admin"))` for protected endpoints
 
+### Adding New Abstraction Backends
+
+To add a new cache or storage backend:
+
+1. Subclass `CacheBackend` (`services/cache.py`) or `StorageBackend` (`services/storage.py`)
+2. Implement all abstract methods
+3. Add a new branch in the `_build_cache()` or `_build_storage()` factory
+4. Add the corresponding environment variable to `config.py`
+
 ### Adding New Database Models
 
 1. Define SQLAlchemy model class inheriting from `Base` (in `models/`)
 2. Define corresponding Pydantic schemas for create/read operations
-3. Tables are auto-created in development when `ENVIRONMENT=development`
+3. Tables are auto-created in demo and development modes
 4. No migration framework is in place — schema changes require manual handling in production
 
 ## Known Limitations
@@ -182,11 +217,14 @@ State transitions use enums: `WorkflowState`, `TaskState` (defined in `models/sc
 - **Rules engine uses `eval()`/`exec()`** — Unsafe for untrusted input; acceptable for demo purposes only
 - **File-based governance persistence** — `data/governance_gates.json` is not database-backed
 - **No migration system** — Schema changes are not versioned
+- **Redis/S3 are stubs** — Production backends require `redis` or `boto3` packages not in `requirements.txt`
 
 ## Security Notes
 
 - Never commit API keys or secrets to the repository
 - `BLADNIR_ADMIN_KEY` must be 32+ characters in production
 - Authentication uses HMAC-based timing-safe comparison
+- Demo mode auth bypass is **not** active when `ENVIRONMENT=production`
 - CORS origins should be restricted to known frontends in production
 - The rules engine (`eval`/`exec`) must not be exposed to untrusted user input
+- Storage layer prevents directory traversal attacks
