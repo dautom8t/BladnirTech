@@ -41,6 +41,9 @@ logger = logging.getLogger(__name__)
 if settings.auto_create_tables:
     try:
         Base.metadata.create_all(bind=engine)
+        # AME models use their own declarative Base
+        from src.enterprise.ame.models import Base as AMEBase
+        AMEBase.metadata.create_all(bind=engine)
         logger.info("Database tables created successfully")
     except Exception as e:
         logger.error(f"Failed to create database tables: {e}")

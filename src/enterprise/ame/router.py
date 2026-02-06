@@ -47,7 +47,7 @@ class ScopeKey(BaseModel):
     role_context: Optional[str] = Field(None, max_length=120, description="Optional role context")
 
     class Config:
-        schema_extra = {
+        json_schema_extra = {
             "example": {
                 "tenant_id": "acme_corp",
                 "site_id": "pharmacy_01",
@@ -95,7 +95,7 @@ class DecisionEventIn(BaseModel):
     """Human decides on AI proposal."""
     scope: ScopeKey
     proposal_id: Optional[str] = Field(None, max_length=64)
-    decision: str = Field(..., regex="^(approve|reject|defer)$", description="approve, reject, or defer")
+    decision: str = Field(..., pattern="^(approve|reject|defer)$", description="approve, reject, or defer")
     decision_reason: Optional[str] = Field(None, max_length=500, description="Justification for decision")
 
 
