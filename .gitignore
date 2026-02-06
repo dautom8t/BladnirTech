@@ -1,0 +1,24 @@
+# Python
+__pycache__/
+*.py[cod]
+*.pyo
+*.egg-info/
+dist/
+build/
+
+# Database
+*.db
+
+# Logs
+logs/
+
+# Data (runtime-generated)
+data/
+
+# Environment
+.env
+*.env
+
+# IDE
+.vscode/
+.idea/
