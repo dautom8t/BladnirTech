@@ -17,6 +17,7 @@ from models.schemas import EventCreate
 from src.enterprise.ame.service import (
     log_event as _ame_log_event,
     resolve_execution_mode as _ame_resolve,
+    create_execution as _ame_create_execution,
 )
 from src.enterprise.ame.models import AMEEventType
 
@@ -77,6 +78,17 @@ def _ame_trust_info(db, queue, action_type="advance_queue"):
         return {"stage": mode, "trust": meta.get("trust", 0.0), "meta": meta}
     except Exception:
         return {"stage": "observe", "trust": 0.0}
+
+
+def _ame_resolve_safe(db, queue, action_type="advance_queue", confidence=0.75, safety=0.85):
+    """Resolve AME execution mode. Returns (stage_str, meta_dict) — never throws."""
+    try:
+        return _ame_resolve(
+            db, site_id=_AME_SITE, queue=queue, action_type=action_type,
+            model_confidence=confidence, model_safety=safety,
+        )
+    except Exception:
+        return "observe", {"trust": 0.0, "stage": "observe", "reason": "error"}
 
 
 @router.get("/dashboard/api/automation")
@@ -287,6 +299,21 @@ def propose_automation(
     db=Depends(get_db),
 ):
     case = _case_or_404(case_id)
+    queue = case.get("queue", "unknown")
+
+    # --- AME Stage Enforcement: OBSERVE blocks proposals ---
+    mode, meta = _ame_resolve_safe(db, queue=queue, action_type=action_type,
+                                   confidence=confidence, safety=safety_score)
+    if mode == "observe":
+        raise HTTPException(
+            status_code=403,
+            detail=(
+                f"AME stage is OBSERVE for {queue}/{action_type} — system is still "
+                f"learning from human decisions. Proposals are not allowed yet. "
+                f"Trust: {meta.get('trust', 0.0):.2f}"
+            ),
+        )
+
     action = {
         "type": action_type,
         "label": label,
@@ -297,7 +324,6 @@ def propose_automation(
     p = _mk_proposal(case_id, action)
 
     # AME: log proposal creation
-    queue = case.get("queue", "unknown")
     _ame_safe(db, queue=queue, action_type=action_type,
               event_type=AMEEventType.PROPOSAL_CREATED.value,
               proposal_id=p["id"],
@@ -305,7 +331,7 @@ def propose_automation(
               predicted_safety=safety_score,
               context={"case_id": case_id, "label": label})
 
-    return {"ok": True, "proposal": p}
+    return {"ok": True, "proposal": p, "ame_stage": mode}
 
 @router.post("/dashboard/api/automation/{proposal_id}/decide")
 def decide_proposal(
@@ -377,6 +403,15 @@ def execute_proposal(
 
     case = _case_or_404(p["case_id"])
     action = p.get("action") or {}
+    act_type = action.get("type", "advance_queue")
+    queue = case.get("queue", "unknown")
+
+    # --- AME Stage Enforcement ---
+    mode, meta = _ame_resolve_safe(db, queue=queue, action_type=act_type,
+                                   confidence=action.get("confidence", 0.75),
+                                   safety=action.get("safety_score", 0.85))
+    skip_governance = mode in ("guarded_auto", "conditional_auto", "full_auto")
+    needs_rollback = mode in ("guarded_auto", "conditional_auto")
 
     # ensure audit exists
     if "audit" not in p or not isinstance(p["audit"], list):
@@ -399,8 +434,16 @@ def execute_proposal(
             })
         else:
             gk = gate_for_transition(cur, to_q)
-            # FIXED: Added error handling around governance check
-            if gk:
+
+            if skip_governance and gk:
+                # AME trust level allows bypassing governance gate
+                p["audit"].append({
+                    "ts": now,
+                    "event": "governance_bypassed",
+                    "meta": {"reason": f"AME stage {mode}", "gate": gk,
+                             "trust": meta.get("trust", 0.0)},
+                })
+            elif gk:
                 try:
                     governance.require_authorized(gk)
                 except Exception as e:
@@ -411,13 +454,34 @@ def execute_proposal(
                     })
                     raise HTTPException(status_code=403, detail=f"Not authorized: {gk}")
 
+            before_state = {"queue": cur}
             case["queue"] = to_q
             case["status"] = "demo"
             p["audit"].append({
                 "ts": now,
                 "event": "executed:advance_queue",
-                "meta": {"from": cur, "to": case["queue"]},
+                "meta": {"from": cur, "to": case["queue"], "ame_stage": mode},
             })
+
+            # GUARDED/CONDITIONAL: create execution record with rollback window
+            if needs_rollback:
+                try:
+                    exe = _ame_create_execution(
+                        db, site_id=_AME_SITE, queue=cur, action_type=act_type,
+                        proposal_id=proposal_id,
+                        before_state=before_state,
+                        after_state={"queue": to_q},
+                        guarded=True,
+                    )
+                    db.commit()
+                    p["audit"].append({
+                        "ts": now,
+                        "event": "rollback_window_created",
+                        "meta": {"execution_id": exe.id,
+                                 "reversible_until": str(exe.reversible_until)},
+                    })
+                except Exception as exc:
+                    _ame_log.warning("AME execution record skipped: %s", exc)
     else:
         p["audit"].append({
             "ts": now,
@@ -432,12 +496,10 @@ def execute_proposal(
     p["audit"].append({
         "ts": now,
         "event": "executed",
-        "meta": {"by": executed_by},
+        "meta": {"by": executed_by, "ame_stage": mode},
     })
 
     # AME: log execution + successful outcome
-    queue = case.get("queue", "unknown")
-    act_type = action.get("type", "advance_queue")
     _ame_safe(db, queue=queue, action_type=act_type,
               event_type=AMEEventType.EXECUTED.value,
               proposal_id=proposal_id)
@@ -447,7 +509,7 @@ def execute_proposal(
               outcome_success=True, observed_time_saved_sec=30.0)
 
     ame = _ame_trust_info(db, queue, act_type)
-    return {"ok": True, "proposal": p, "case": case, "ame": ame}
+    return {"ok": True, "proposal": p, "case": case, "ame": ame, "ame_stage": mode}
 
 @router.get("/dashboard/api/scenarios")
 def list_demo_scenarios():
@@ -618,9 +680,52 @@ def dashboard_auto_step(
     db=Depends(get_db),
 ):
     """
-    Governed auto-step for demo + DB workflows.
-    Uses AUTH toggles as human-permission gates.
+    AME-governed auto-step for demo + DB workflows.
+
+    Stage enforcement:
+      OBSERVE / PROPOSE  → governance gate required (human toggles)
+      GUARDED_AUTO       → governance bypassed, rollback window created
+      CONDITIONAL_AUTO   → governance bypassed (thresholds already validated)
+      FULL_AUTO          → governance bypassed, immediate execution
     """
+
+    def _step_with_enforcement(cur_queue):
+        """Resolve AME stage and step the queue accordingly.
+        Returns (next_queue, gate_key, ame_stage, ame_meta, execution_record_or_None).
+        """
+        t = TRANSITIONS.get(cur_queue)
+        if not t:
+            return cur_queue, None, "observe", {}, None
+
+        to_q = t["to"]
+        gk = t["gate"]
+
+        mode, meta = _ame_resolve_safe(db, queue=cur_queue, action_type="advance_queue")
+
+        exe_record = None
+        if mode in ("guarded_auto", "conditional_auto", "full_auto"):
+            # Trust level allows bypassing governance gate
+            log.info("AME stage %s: bypassing governance gate %s for %s→%s",
+                     mode, gk, cur_queue, to_q)
+
+            # GUARDED/CONDITIONAL: create execution record with rollback window
+            if mode in ("guarded_auto", "conditional_auto"):
+                try:
+                    exe_record = _ame_create_execution(
+                        db, site_id=_AME_SITE, queue=cur_queue,
+                        action_type="advance_queue", proposal_id=None,
+                        before_state={"queue": cur_queue},
+                        after_state={"queue": to_q},
+                        guarded=True,
+                    )
+                    db.commit()
+                except Exception as exc:
+                    _ame_log.warning("AME execution record skipped: %s", exc)
+        else:
+            # OBSERVE / PROPOSE: governance gate required
+            governance.require_authorized(gk)
+
+        return to_q, gk, mode, meta, exe_record
 
     # ----------------
     # DEMO case (negative IDs)
@@ -631,13 +736,16 @@ def dashboard_auto_step(
             raise HTTPException(status_code=404, detail="Demo workflow not found")
 
         cur = row.get("queue") or "data_entry"
-        nxt, gk = step_queue(cur)   # governance-enforced
+        nxt, gk, mode, meta, exe = _step_with_enforcement(cur)
 
         if nxt == cur:
-            return {"ok": True, "note": f"No rule for queue '{cur}'", "queue": cur}
+            return {"ok": True, "note": f"No rule for queue '{cur}'", "queue": cur,
+                    "ame_stage": mode}
 
-        row["raw"]["events"].append({"event_type": "auto_step", "payload": {"from": cur, "to": nxt}})
-        row["raw"]["events"].append({"event_type": "queue_changed", "payload": {"from": cur, "to": nxt}})
+        row["raw"]["events"].append({"event_type": "auto_step",
+                                     "payload": {"from": cur, "to": nxt, "ame_stage": mode}})
+        row["raw"]["events"].append({"event_type": "queue_changed",
+                                     "payload": {"from": cur, "to": nxt}})
         row["queue"] = nxt
         row["events"] = len(row["raw"].get("events") or [])
 
@@ -647,17 +755,22 @@ def dashboard_auto_step(
                   event_type=AMEEventType.PROPOSAL_CREATED.value,
                   proposal_id=pid, predicted_confidence=0.86, predicted_safety=0.92,
                   predicted_time_saved_sec=30.0,
-                  context={"transition": f"{cur}→{nxt}", "workflow_id": workflow_id})
+                  context={"transition": f"{cur}→{nxt}", "workflow_id": workflow_id,
+                           "ame_stage": mode})
         _ame_safe(db, queue=cur, action_type="advance_queue",
                   event_type=AMEEventType.PROPOSAL_DECIDED.value,
                   proposal_id=pid, decision="approve", decision_by="auto_step",
-                  decision_reason=f"Governed auto-step {cur}→{nxt}")
+                  decision_reason=f"AME {mode}: auto-step {cur}→{nxt}")
         _ame_safe(db, queue=cur, action_type="advance_queue",
                   event_type=AMEEventType.OUTCOME.value,
                   proposal_id=pid, outcome_success=True, observed_time_saved_sec=30.0)
 
         ame = _ame_trust_info(db, cur)
-        return {"ok": True, "from": cur, "to": nxt, "ame": ame}
+        result = {"ok": True, "from": cur, "to": nxt, "ame": ame, "ame_stage": mode}
+        if exe:
+            result["rollback_until"] = str(exe.reversible_until)
+            result["execution_id"] = exe.id
+        return result
 
     # ----------------
     # DB workflow (positive IDs): append events only (pilot-safe)
@@ -667,11 +780,13 @@ def dashboard_auto_step(
         raise HTTPException(status_code=404, detail="Workflow not found")
 
     wf_read = workflow_service.to_workflow_read(wf).model_dump()
-    cur = wf_read.get("queue") or "data_entry"  # FIXED: Extract actual queue instead of hardcoding
-    nxt, gk = step_queue(cur)   # governance-enforced
+    cur = wf_read.get("queue") or "data_entry"
+    nxt, gk, mode, meta, exe = _step_with_enforcement(cur)
 
-    workflow_service.add_event(db, workflow_id, EventCreate(event_type="auto_step", payload={"from": cur, "to": nxt}))
-    workflow_service.add_event(db, workflow_id, EventCreate(event_type="queue_changed", payload={"from": cur, "to": nxt}))
+    workflow_service.add_event(db, workflow_id, EventCreate(
+        event_type="auto_step", payload={"from": cur, "to": nxt, "ame_stage": mode}))
+    workflow_service.add_event(db, workflow_id, EventCreate(
+        event_type="queue_changed", payload={"from": cur, "to": nxt}))
 
     # AME: log auto-step trust cycle for DB workflows
     pid = f"dash-{uuid.uuid4().hex[:8]}"
@@ -679,18 +794,24 @@ def dashboard_auto_step(
               event_type=AMEEventType.PROPOSAL_CREATED.value,
               proposal_id=pid, predicted_confidence=0.86, predicted_safety=0.92,
               predicted_time_saved_sec=30.0,
-              context={"transition": f"{cur}→{nxt}", "workflow_id": workflow_id})
+              context={"transition": f"{cur}→{nxt}", "workflow_id": workflow_id,
+                       "ame_stage": mode})
     _ame_safe(db, queue=cur, action_type="advance_queue",
               event_type=AMEEventType.PROPOSAL_DECIDED.value,
               proposal_id=pid, decision="approve", decision_by="auto_step",
-              decision_reason=f"Governed auto-step {cur}→{nxt}")
+              decision_reason=f"AME {mode}: auto-step {cur}→{nxt}")
     _ame_safe(db, queue=cur, action_type="advance_queue",
               event_type=AMEEventType.OUTCOME.value,
               proposal_id=pid, outcome_success=True, observed_time_saved_sec=30.0)
 
     ame = _ame_trust_info(db, cur)
     wf2 = workflow_service.get_workflow(db, workflow_id)
-    return {"ok": True, "workflow": workflow_service.to_workflow_read(wf2).model_dump(), "from": cur, "to": nxt, "ame": ame}
+    result = {"ok": True, "workflow": workflow_service.to_workflow_read(wf2).model_dump(),
+              "from": cur, "to": nxt, "ame": ame, "ame_stage": mode}
+    if exe:
+        result["rollback_until"] = str(exe.reversible_until)
+        result["execution_id"] = exe.id
+    return result
 
 # =============================
 # UI: /dashboard (UPDATED)
