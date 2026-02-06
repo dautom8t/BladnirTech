@@ -8,11 +8,17 @@ from typing import Dict, Any, List
 import uuid
 import logging
 log = logging.getLogger("uvicorn.error")
+_ame_log = logging.getLogger("bladnir.ame")
 from enterprise import governance
 
 from models.database import get_db
 from services import workflow as workflow_service
 from models.schemas import EventCreate
+from src.enterprise.ame.service import (
+    log_event as _ame_log_event,
+    resolve_execution_mode as _ame_resolve,
+)
+from src.enterprise.ame.models import AMEEventType
 
 router = APIRouter(tags=["dashboard"])
 
@@ -45,6 +51,33 @@ def step_queue(cur: str):
         return cur, None
     governance.require_authorized(t["gate"])
     return t["to"], t["gate"]
+
+# =============================
+# AME Trust Integration
+# =============================
+
+_AME_SITE = "dashboard_demo"
+
+
+def _ame_safe(db, **kwargs):
+    """Log AME trust event. Non-blocking: failures never break the dashboard."""
+    try:
+        return _ame_log_event(db, tenant_id="default", site_id=_AME_SITE, **kwargs)
+    except Exception as exc:
+        _ame_log.warning("AME event skipped: %s", exc)
+        return None
+
+
+def _ame_trust_info(db, queue, action_type="advance_queue"):
+    """Get current AME trust stage for a scope. Returns dict safe for JSON response."""
+    try:
+        mode, meta = _ame_resolve(
+            db, site_id=_AME_SITE, queue=queue, action_type=action_type,
+        )
+        return {"stage": mode, "trust": meta.get("trust", 0.0), "meta": meta}
+    except Exception:
+        return {"stage": "observe", "trust": 0.0}
+
 
 @router.get("/dashboard/api/automation")
 def dashboard_get_automation():
@@ -208,7 +241,8 @@ def get_case_detail(case_id: int, db=Depends(get_db)):
                     "safety_score": 0.92,
                 })
 
-        return {"case": row, "suggested_actions": suggested, "proposals": proposals}
+        ame = _ame_trust_info(db, queue) if queue else {}
+        return {"case": row, "suggested_actions": suggested, "proposals": proposals, "ame": ame}
 
     # ----------------
     # DB workflow (positive IDs)
@@ -239,7 +273,8 @@ def get_case_detail(case_id: int, db=Depends(get_db)):
             "safety_score": 0.85,
         })
 
-    return {"case": case_view, "suggested_actions": suggested, "proposals": []}
+    ame = _ame_trust_info(db, queue)
+    return {"case": case_view, "suggested_actions": suggested, "proposals": [], "ame": ame}
 
 @router.post("/dashboard/api/cases/{case_id}/propose")
 def propose_automation(
@@ -249,8 +284,9 @@ def propose_automation(
     payload: Dict[str, Any] = Body(default={}),
     confidence: float = Body(0.75),
     safety_score: float = Body(0.75),
+    db=Depends(get_db),
 ):
-    _case_or_404(case_id)
+    case = _case_or_404(case_id)
     action = {
         "type": action_type,
         "label": label,
@@ -259,6 +295,16 @@ def propose_automation(
         "safety_score": safety_score,
     }
     p = _mk_proposal(case_id, action)
+
+    # AME: log proposal creation
+    queue = case.get("queue", "unknown")
+    _ame_safe(db, queue=queue, action_type=action_type,
+              event_type=AMEEventType.PROPOSAL_CREATED.value,
+              proposal_id=p["id"],
+              predicted_confidence=confidence,
+              predicted_safety=safety_score,
+              context={"case_id": case_id, "label": label})
+
     return {"ok": True, "proposal": p}
 
 @router.post("/dashboard/api/automation/{proposal_id}/decide")
@@ -267,6 +313,7 @@ def decide_proposal(
     decision: str = Body(..., embed=True),
     decided_by: str = Body("human", embed=True),
     note: str = Body("", embed=True),
+    db=Depends(get_db),
 ):
     try:
         p = DEMO_PROPOSAL_BY_ID.get(proposal_id)
@@ -280,7 +327,7 @@ def decide_proposal(
         # update status
         now = _now_iso()
         p["status"] = "approved" if decision == "approve" else "rejected"
-        
+
         # FIXED: Consolidated attribution fields
         if decision == "approve":
             p["approved_by"] = decided_by
@@ -298,6 +345,16 @@ def decide_proposal(
             "meta": {"by": decided_by, "note": note},
         })
 
+        # AME: log human decision on proposal
+        action = p.get("action") or {}
+        case = DEMO_BY_ID.get(p.get("case_id"))
+        queue = (case or {}).get("queue", "unknown")
+        _ame_safe(db, queue=queue, action_type=action.get("type", "advance_queue"),
+                  event_type=AMEEventType.PROPOSAL_DECIDED.value,
+                  proposal_id=proposal_id,
+                  decision=decision, decision_by=decided_by,
+                  decision_reason=note or decision)
+
         return {"ok": True, "proposal": p}
 
     except HTTPException:
@@ -310,6 +367,7 @@ def decide_proposal(
 def execute_proposal(
     proposal_id: str,
     executed_by: str = Body("system", embed=True),
+    db=Depends(get_db),
 ):
     p = DEMO_PROPOSAL_BY_ID.get(proposal_id)
     if not p:
@@ -377,7 +435,19 @@ def execute_proposal(
         "meta": {"by": executed_by},
     })
 
-    return {"ok": True, "proposal": p, "case": case}
+    # AME: log execution + successful outcome
+    queue = case.get("queue", "unknown")
+    act_type = action.get("type", "advance_queue")
+    _ame_safe(db, queue=queue, action_type=act_type,
+              event_type=AMEEventType.EXECUTED.value,
+              proposal_id=proposal_id)
+    _ame_safe(db, queue=queue, action_type=act_type,
+              event_type=AMEEventType.OUTCOME.value,
+              proposal_id=proposal_id,
+              outcome_success=True, observed_time_saved_sec=30.0)
+
+    ame = _ame_trust_info(db, queue, act_type)
+    return {"ok": True, "proposal": p, "case": case, "ame": ame}
 
 @router.get("/dashboard/api/scenarios")
 def list_demo_scenarios():
@@ -570,7 +640,24 @@ def dashboard_auto_step(
         row["raw"]["events"].append({"event_type": "queue_changed", "payload": {"from": cur, "to": nxt}})
         row["queue"] = nxt
         row["events"] = len(row["raw"].get("events") or [])
-        return {"ok": True, "from": cur, "to": nxt}
+
+        # AME: log auto-step as a complete trust cycle
+        pid = f"dash-{uuid.uuid4().hex[:8]}"
+        _ame_safe(db, queue=cur, action_type="advance_queue",
+                  event_type=AMEEventType.PROPOSAL_CREATED.value,
+                  proposal_id=pid, predicted_confidence=0.86, predicted_safety=0.92,
+                  predicted_time_saved_sec=30.0,
+                  context={"transition": f"{cur}→{nxt}", "workflow_id": workflow_id})
+        _ame_safe(db, queue=cur, action_type="advance_queue",
+                  event_type=AMEEventType.PROPOSAL_DECIDED.value,
+                  proposal_id=pid, decision="approve", decision_by="auto_step",
+                  decision_reason=f"Governed auto-step {cur}→{nxt}")
+        _ame_safe(db, queue=cur, action_type="advance_queue",
+                  event_type=AMEEventType.OUTCOME.value,
+                  proposal_id=pid, outcome_success=True, observed_time_saved_sec=30.0)
+
+        ame = _ame_trust_info(db, cur)
+        return {"ok": True, "from": cur, "to": nxt, "ame": ame}
 
     # ----------------
     # DB workflow (positive IDs): append events only (pilot-safe)
@@ -586,8 +673,24 @@ def dashboard_auto_step(
     workflow_service.add_event(db, workflow_id, EventCreate(event_type="auto_step", payload={"from": cur, "to": nxt}))
     workflow_service.add_event(db, workflow_id, EventCreate(event_type="queue_changed", payload={"from": cur, "to": nxt}))
 
+    # AME: log auto-step trust cycle for DB workflows
+    pid = f"dash-{uuid.uuid4().hex[:8]}"
+    _ame_safe(db, queue=cur, action_type="advance_queue",
+              event_type=AMEEventType.PROPOSAL_CREATED.value,
+              proposal_id=pid, predicted_confidence=0.86, predicted_safety=0.92,
+              predicted_time_saved_sec=30.0,
+              context={"transition": f"{cur}→{nxt}", "workflow_id": workflow_id})
+    _ame_safe(db, queue=cur, action_type="advance_queue",
+              event_type=AMEEventType.PROPOSAL_DECIDED.value,
+              proposal_id=pid, decision="approve", decision_by="auto_step",
+              decision_reason=f"Governed auto-step {cur}→{nxt}")
+    _ame_safe(db, queue=cur, action_type="advance_queue",
+              event_type=AMEEventType.OUTCOME.value,
+              proposal_id=pid, outcome_success=True, observed_time_saved_sec=30.0)
+
+    ame = _ame_trust_info(db, cur)
     wf2 = workflow_service.get_workflow(db, workflow_id)
-    return {"ok": True, "workflow": workflow_service.to_workflow_read(wf2).model_dump(), "from": cur, "to": nxt}
+    return {"ok": True, "workflow": workflow_service.to_workflow_read(wf2).model_dump(), "from": cur, "to": nxt, "ame": ame}
 
 # =============================
 # UI: /dashboard (UPDATED)
