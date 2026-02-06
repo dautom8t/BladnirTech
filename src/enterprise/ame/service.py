@@ -359,14 +359,445 @@ def _compute_scope_metrics(
     cfg: AMEConfig,
 ) -> Dict[str, float]:
     """
-    Compute trust metrics from event history.
+    Compute trust metrics from event history using exponential decay weighting.
 
     Returns dict with: trust, reliability, alignment, safety_calibration,
     value_score, override_rate, and evidence counts.
     """
-    # Implementation continues with same logic but better structure...
-    # (Keeping response concise - would include all the metric computation logic here)
-    pass
+    now = _now()
+
+    # Fetch recent events for this scope
+    q = (
+        db.query(AMEEvent)
+        .filter(
+            AMEEvent.tenant_id == tenant_id,
+            AMEEvent.site_id == site_id,
+            AMEEvent.queue == queue,
+            AMEEvent.action_type == action_type,
+            AMEEvent.deleted_at.is_(None),
+        )
+        .order_by(desc(AMEEvent.ts))
+        .limit(cfg.max_events_to_analyze)
+    )
+    if role_context is not None:
+        q = q.filter(AMEEvent.role_context == role_context)
+    else:
+        q = q.filter(AMEEvent.role_context.is_(None))
+
+    events = q.all()
+
+    if not events:
+        return {
+            "trust": 0.0, "reliability": 0.0, "alignment": 0.0,
+            "safety_calibration": 0.0, "value_score": 0.0, "override_rate": 0.0,
+            "proposals": 0, "approved": 0, "rejected": 0,
+            "successes": 0, "failures": 0, "overrides": 0,
+            "observations": len(events),
+        }
+
+    # --- Counters ---
+    proposals = 0
+    approved = 0
+    rejected = 0
+    successes = 0
+    failures = 0
+    overrides = 0
+
+    # --- Weighted accumulators ---
+    w_correct_sum = 0.0
+    w_correct_total = 0.0
+
+    w_align_sum = 0.0
+    w_align_total = 0.0
+
+    w_safety_sum = 0.0
+    w_safety_total = 0.0
+
+    w_value_sum = 0.0
+    w_value_total = 0.0
+
+    w_override_sum = 0.0
+    w_override_total = 0.0
+
+    for ev in events:
+        w = _weight(ev.ts, now, cfg.lambda_decay)
+
+        if ev.event_type == AMEEventType.PROPOSAL_CREATED.value:
+            proposals += 1
+
+        elif ev.event_type == AMEEventType.PROPOSAL_DECIDED.value:
+            if ev.decision == "approve":
+                approved += 1
+                w_align_sum += w * 1.0
+            elif ev.decision == "reject":
+                rejected += 1
+                w_align_sum += w * 0.0
+            w_align_total += w
+
+        elif ev.event_type == AMEEventType.OUTCOME.value:
+            if ev.outcome_success is True:
+                successes += 1
+                w_correct_sum += w * 1.0
+            elif ev.outcome_success is False:
+                failures += 1
+                w_correct_sum += w * 0.0
+            w_correct_total += w
+
+            # Safety calibration: predicted_safety vs actual outcome
+            if ev.predicted_safety is not None and ev.outcome_success is not None:
+                actual = 1.0 if ev.outcome_success and not ev.observed_error else 0.0
+                predicted = float(ev.predicted_safety)
+                calibration = 1.0 - abs(predicted - actual)
+                w_safety_sum += w * calibration
+                w_safety_total += w
+
+            # Value: observed time saved vs predicted
+            if ev.observed_time_saved_sec is not None and ev.predicted_time_saved_sec is not None:
+                predicted_t = float(ev.predicted_time_saved_sec)
+                observed_t = float(ev.observed_time_saved_sec)
+                if predicted_t > 0:
+                    ratio = min(observed_t / predicted_t, 1.5)  # Cap at 150%
+                    w_value_sum += w * _clamp01(ratio)
+                    w_value_total += w
+
+            # Override tracking
+            if ev.override:
+                overrides += 1
+                w_override_sum += w * 1.0
+            w_override_total += w
+
+    # --- Compute final metrics ---
+    reliability = _clamp01(_safe_div(w_correct_sum, w_correct_total))
+    alignment = _clamp01(_safe_div(w_align_sum, w_align_total))
+    safety_calibration = _clamp01(_safe_div(w_safety_sum, w_safety_total, default=0.5))
+    value_score = _clamp01(_safe_div(w_value_sum, w_value_total, default=0.5))
+    override_rate = _clamp01(_safe_div(w_override_sum, w_override_total))
+
+    # Composite trust score
+    raw_trust = (
+        cfg.w_reliability * reliability
+        + cfg.w_alignment * alignment
+        + cfg.w_safety_calibration * safety_calibration
+        + cfg.w_value * value_score
+    )
+    # Apply override penalty
+    trust = _clamp01(raw_trust - cfg.override_penalty_scale * override_rate)
+
+    return {
+        "trust": trust,
+        "reliability": reliability,
+        "alignment": alignment,
+        "safety_calibration": safety_calibration,
+        "value_score": value_score,
+        "override_rate": override_rate,
+        "proposals": proposals,
+        "approved": approved,
+        "rejected": rejected,
+        "successes": successes,
+        "failures": failures,
+        "overrides": overrides,
+        "observations": len(events),
+    }
 
 
-# Rest of implementation...
+def _determine_stage(
+    current_stage: str,
+    metrics: Dict[str, float],
+    cfg: AMEConfig,
+) -> str:
+    """
+    Determine the appropriate stage based on current metrics.
+
+    Supports both promotion and demotion with hysteresis.
+    """
+    trust = metrics["trust"]
+    observations = metrics["observations"]
+    proposals = metrics["proposals"]
+    successes = metrics["successes"]
+    override_rate = metrics["override_rate"]
+
+    # Safety guard: too many overrides blocks promotion
+    override_safe = override_rate <= cfg.max_override_rate_for_promotion
+
+    stage_order = [
+        AMEStage.OBSERVE.value,
+        AMEStage.PROPOSE.value,
+        AMEStage.GUARDED_AUTO.value,
+        AMEStage.CONDITIONAL_AUTO.value,
+        AMEStage.FULL_AUTO.value,
+    ]
+
+    current_idx = stage_order.index(current_stage) if current_stage in stage_order else 0
+
+    # --- Promotion logic ---
+    target_idx = current_idx
+
+    if (current_idx == 0
+            and trust >= cfg.observe_to_propose
+            and observations >= cfg.min_observations
+            and override_safe):
+        target_idx = 1
+
+    if (current_idx <= 1
+            and trust >= cfg.propose_to_guarded
+            and proposals >= cfg.min_proposals
+            and override_safe):
+        target_idx = 2
+
+    if (current_idx <= 2
+            and trust >= cfg.guarded_to_conditional
+            and successes >= cfg.min_executions
+            and override_safe):
+        target_idx = 3
+
+    if (current_idx <= 3
+            and trust >= cfg.conditional_to_full
+            and successes >= cfg.min_executions * 2
+            and override_safe):
+        target_idx = 4
+
+    # --- Demotion logic ---
+    if current_idx >= 2 and trust < cfg.downgrade_below:
+        # Drop one stage
+        target_idx = min(target_idx, current_idx - 1)
+
+    # Only move one stage at a time
+    if target_idx > current_idx:
+        target_idx = current_idx + 1
+    elif target_idx < current_idx:
+        target_idx = current_idx - 1
+
+    return stage_order[target_idx]
+
+
+# =====================================
+# Public API (imported by router)
+# =====================================
+
+def get_scope(
+    db: Session,
+    tenant_id: str,
+    site_id: str,
+    queue: str,
+    action_type: str,
+    role_context: Optional[str] = None,
+) -> Optional[AMETrustScope]:
+    """Fetch a trust scope without creating it."""
+    return (
+        db.query(AMETrustScope)
+        .filter(
+            AMETrustScope.tenant_id == tenant_id,
+            AMETrustScope.site_id == site_id,
+            AMETrustScope.queue == queue,
+            AMETrustScope.action_type == action_type,
+            AMETrustScope.role_context.is_(None) if role_context is None
+                else AMETrustScope.role_context == role_context,
+        )
+        .first()
+    )
+
+
+def compute_and_update_scope(
+    db: Session,
+    tenant_id: str,
+    site_id: str,
+    queue: str,
+    action_type: str,
+    role_context: Optional[str],
+    cfg: AMEConfig,
+) -> AMETrustScope:
+    """Get-or-create scope and force a metrics recompute."""
+    scope = _ensure_scope(db, tenant_id, site_id, queue, action_type, role_context)
+
+    metrics = _compute_scope_metrics(
+        db, tenant_id, site_id, queue, action_type, role_context, cfg
+    )
+
+    old_stage = scope.stage
+    new_stage = _determine_stage(old_stage, metrics, cfg)
+    now = _now()
+
+    scope.trust_score = float(metrics["trust"])
+    scope.reliability = float(metrics["reliability"])
+    scope.alignment = float(metrics["alignment"])
+    scope.safety_calibration = float(metrics["safety_calibration"])
+    scope.value_score = float(metrics["value_score"])
+    scope.override_rate = float(metrics["override_rate"])
+    scope.total_proposals = int(metrics["proposals"])
+    scope.approved_proposals = int(metrics["approved"])
+    scope.successful_executions = int(metrics["successes"])
+    scope.stage = new_stage
+    scope.last_event_at = now
+    scope.updated_at = now
+
+    if new_stage != old_stage:
+        scope.stage_changed_at = now
+        scope.previous_stage = old_stage
+
+    db.commit()
+    db.refresh(scope)
+    return scope
+
+
+def create_execution(
+    db: Session,
+    *,
+    tenant_id: str = "default",
+    site_id: str,
+    queue: str,
+    action_type: str,
+    role_context: Optional[str] = None,
+    proposal_id: Optional[str] = None,
+    before_state: Optional[Dict[str, Any]] = None,
+    after_state: Optional[Dict[str, Any]] = None,
+    guarded: bool = True,
+) -> AMEExecution:
+    """
+    Create an execution record, optionally with a rollback window.
+
+    If guarded=True, sets reversible_until to now + guarded_rollback_minutes.
+    """
+    cfg = AMEConfig()
+    now = _now()
+
+    reversible_until = None
+    if guarded:
+        reversible_until = now + timedelta(minutes=cfg.guarded_rollback_minutes)
+
+    ex = AMEExecution(
+        tenant_id=tenant_id,
+        site_id=site_id,
+        queue=queue,
+        action_type=action_type,
+        role_context=role_context,
+        proposal_id=proposal_id,
+        before_state_json=before_state,
+        after_state_json=after_state,
+        reversible_until=reversible_until,
+        executed_by="system",
+    )
+    db.add(ex)
+    db.flush()
+
+    logger.info(
+        f"Created execution {ex.id} for {queue}/{action_type} "
+        f"(guarded={guarded}, reversible_until={reversible_until})"
+    )
+    return ex
+
+
+def rollback_execution(
+    db: Session,
+    execution_id: int,
+    *,
+    reason: str = "",
+    rolled_back_by: str = "admin",
+) -> AMEExecution:
+    """
+    Roll back an execution if it's still within the reversibility window.
+
+    Raises ValueError if execution not found or already rolled back.
+    """
+    ex = db.query(AMEExecution).filter(AMEExecution.id == execution_id).first()
+    if not ex:
+        raise ValueError(f"Execution {execution_id} not found")
+
+    if ex.rolled_back:
+        raise ValueError(f"Execution {execution_id} already rolled back")
+
+    now = _now()
+
+    if ex.reversible_until and now > ex.reversible_until:
+        logger.warning(
+            f"Rollback attempted after window closed for execution {execution_id}"
+        )
+        # Allow rollback but log the warning — admins may need to force it
+
+    ex.rolled_back = True
+    ex.rollback_at = now
+    ex.rollback_by = rolled_back_by
+    ex.rollback_reason = reason
+    ex.rollback_success = True
+
+    # Log rollback event for trust computation
+    log_event(
+        db,
+        tenant_id=ex.tenant_id,
+        site_id=ex.site_id,
+        queue=ex.queue,
+        action_type=ex.action_type,
+        role_context=ex.role_context,
+        event_type=AMEEventType.ROLLBACK.value,
+        proposal_id=ex.proposal_id,
+        override=True,
+        override_by=rolled_back_by,
+        override_reason=reason,
+    )
+
+    logger.info(f"Rolled back execution {execution_id}: {reason}")
+    return ex
+
+
+def resolve_execution_mode(
+    db: Session,
+    *,
+    tenant_id: str = "default",
+    site_id: str,
+    queue: str,
+    action_type: str,
+    role_context: Optional[str] = None,
+    model_confidence: float = 0.75,
+    model_safety: float = 0.85,
+) -> Tuple[str, Dict[str, Any]]:
+    """
+    Determine execution mode based on current trust stage and anomaly detection.
+
+    Returns:
+        Tuple of (mode_string, metadata_dict)
+    """
+    cfg = AMEConfig()
+    scope = get_scope(db, tenant_id, site_id, queue, action_type, role_context)
+
+    if scope is None:
+        return AMEStage.OBSERVE.value, {
+            "reason": "no_scope",
+            "trust": 0.0,
+            "stage": AMEStage.OBSERVE.value,
+        }
+
+    stage = scope.stage
+    trust = float(scope.trust_score)
+
+    # Anomaly detection: if confidence or safety drops below thresholds,
+    # downgrade to PROPOSE regardless of stage
+    anomaly = False
+    anomaly_reasons: List[str] = []
+
+    if model_confidence < cfg.anomaly_min_confidence:
+        anomaly = True
+        anomaly_reasons.append(f"low_confidence({model_confidence:.2f})")
+
+    if model_safety < cfg.anomaly_min_safety:
+        anomaly = True
+        anomaly_reasons.append(f"low_safety({model_safety:.2f})")
+
+    if anomaly and stage in (
+        AMEStage.GUARDED_AUTO.value,
+        AMEStage.CONDITIONAL_AUTO.value,
+        AMEStage.FULL_AUTO.value,
+    ):
+        return AMEStage.PROPOSE.value, {
+            "reason": "anomaly_detected",
+            "anomaly_reasons": anomaly_reasons,
+            "original_stage": stage,
+            "trust": trust,
+            "stage": AMEStage.PROPOSE.value,
+        }
+
+    return stage, {
+        "reason": "normal",
+        "trust": trust,
+        "stage": stage,
+        "model_confidence": model_confidence,
+        "model_safety": model_safety,
+    }
