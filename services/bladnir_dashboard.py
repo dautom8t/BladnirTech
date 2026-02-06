@@ -301,18 +301,9 @@ def propose_automation(
     case = _case_or_404(case_id)
     queue = case.get("queue", "unknown")
 
-    # --- AME Stage Enforcement: OBSERVE blocks proposals ---
+    # --- AME Stage Resolution (proposals are how the system learns, always allowed) ---
     mode, meta = _ame_resolve_safe(db, queue=queue, action_type=action_type,
                                    confidence=confidence, safety=safety_score)
-    if mode == "observe":
-        raise HTTPException(
-            status_code=403,
-            detail=(
-                f"AME stage is OBSERVE for {queue}/{action_type} — system is still "
-                f"learning from human decisions. Proposals are not allowed yet. "
-                f"Trust: {meta.get('trust', 0.0):.2f}"
-            ),
-        )
 
     action = {
         "type": action_type,

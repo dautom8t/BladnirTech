@@ -144,18 +144,18 @@ class AMETrustScope(Base):
     # Timestamps
     created_at = Column(
         DateTime,
-        default=lambda: datetime.now(timezone.utc),
+        default=datetime.utcnow,
         nullable=False
     )
     last_event_at = Column(
         DateTime,
-        default=lambda: datetime.now(timezone.utc),
+        default=datetime.utcnow,
         nullable=False
     )
     updated_at = Column(
         DateTime,
-        default=lambda: datetime.now(timezone.utc),
-        onupdate=lambda: datetime.now(timezone.utc),
+        default=datetime.utcnow,
+        onupdate=datetime.utcnow,
         nullable=False
     )
 
@@ -209,7 +209,7 @@ class AMEEvent(Base):
     # Timestamp (timezone-aware)
     ts = Column(
         DateTime,
-        default=lambda: datetime.now(timezone.utc),
+        default=datetime.utcnow,
         nullable=False,
         index=True
     )
@@ -299,7 +299,7 @@ class AMEExecution(Base):
     # Timestamp
     ts = Column(
         DateTime,
-        default=lambda: datetime.now(timezone.utc),
+        default=datetime.utcnow,
         nullable=False,
         index=True
     )
