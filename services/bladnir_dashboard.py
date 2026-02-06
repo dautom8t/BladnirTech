@@ -1,6 +1,5 @@
-=============================
-# API: Scenarios list (for dropdown)
-=============================
+
+
 
 from fastapi import APIRouter, Body, Depends, HTTPException
 from fastapi.responses import HTMLResponse
