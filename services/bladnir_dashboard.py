@@ -744,7 +744,9 @@ def dashboard_ui():
 <header>
   <b>Bladnir Tech — Control Tower</b>
   <span class="muted">Governed automation • Queue orchestration • Audit-first</span>
-  <span class="muted" id="status" style="margin-left:auto">Loading…</span>
+  <a href="/ame/dashboard" style="margin-left:auto;color:#60a5fa;text-decoration:none;font-size:13px">AME Trust Dashboard</a>
+  <a href="/kroger" style="color:#60a5fa;text-decoration:none;font-size:13px">Kroger Demo</a>
+  <span class="muted" id="status">Loading…</span>
 </header>
 
 <div class="wrap">

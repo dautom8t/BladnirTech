@@ -405,7 +405,8 @@ def kroger_demo_ui():
 <header>
   <b>Kroger Retail Pack</b>
   <span class="muted">Bladnir Tech • Click-through demo</span>
-  <span class="muted" style="margin-left:auto" id="status">Loading…</span>
+  <a href="/ame/dashboard" class="muted" style="margin-left:auto; text-decoration:underline; cursor:pointer;">AME Trust Dashboard</a>
+  <span class="muted" id="status">Loading…</span>
 </header>
 
 <main>
@@ -467,6 +468,11 @@ def kroger_demo_ui():
         <button class="small" onclick="pharmDecision('approved')">Approve</button>
         <button class="small secondary" onclick="pharmDecision('rejected')">Reject</button>
       </div>
+
+      <div style="height:16px"></div>
+      <hr style="border:none;border-top:1px solid #e5e5e5;" />
+      <div style="height:10px"></div>
+      <button class="secondary" style="width:100%" onclick="resetCase()">Reset — Start New Case</button>
     </div>
   </div>
 
@@ -537,6 +543,23 @@ def kroger_demo_ui():
 <script>
   let selectedWorkflowId = null;
   let scenarioDefaults = {};
+
+  function resetCase(){
+    selectedWorkflowId = null;
+    document.getElementById("wfBadge").textContent = "No workflow";
+    document.getElementById("state").textContent = "—";
+    document.getElementById("meta").textContent = "No workflow selected.";
+    document.getElementById("queue").textContent = "—";
+    document.getElementById("insurance").textContent = "—";
+    document.getElementById("statusText").textContent = "—";
+    document.getElementById("tasks").innerHTML = "";
+    document.getElementById("events").innerHTML = "";
+    document.getElementById("taskCount").textContent = "0";
+    document.getElementById("eventCount").textContent = "0";
+    document.getElementById("out").textContent = "{}";
+    autofillDefaults();
+    setStatus("Reset — ready for a new case");
+  }
 
   function setStatus(msg) { document.getElementById("status").textContent = msg; }
 
