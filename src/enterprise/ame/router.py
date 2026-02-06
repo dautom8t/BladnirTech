@@ -765,8 +765,7 @@ def ame_dashboard_ui():
   <b>AME Trust Dashboard</b>
   <span class="muted">Adaptive Model Evolution — Live Trust Metrics</span>
   <div class="nav-links" style="margin-left:auto">
-    <a href="/kroger">Kroger Demo</a>
-    <a href="/dashboard">Dashboard</a>
+    <a href="/dashboard">Control Tower</a>
   </div>
   <button class="btn" onclick="loadAll()">Refresh</button>
   <span class="muted" id="lastUpdate"></span>
