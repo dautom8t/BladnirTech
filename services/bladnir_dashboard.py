@@ -10,6 +10,7 @@ import logging
 log = logging.getLogger("uvicorn.error")
 _ame_log = logging.getLogger("bladnir.ame")
 from enterprise import governance
+from enterprise.auth import require_auth, require_role, UserContext
 
 from models.database import get_db
 from services import workflow as workflow_service
@@ -97,7 +98,7 @@ def _ame_resolve_safe(db, queue, action_type="advance_queue", confidence=0.75, s
 
 
 @router.get("/dashboard/api/automation")
-def dashboard_get_automation():
+def dashboard_get_automation(user: UserContext = Depends(require_auth)):
     # UI expects {authorizations:{key:bool}}
     gates = governance.list_gates()
     keys = {t["gate"] for t in TRANSITIONS.values()}
@@ -107,14 +108,14 @@ def dashboard_get_automation():
 def dashboard_set_automation(
     transition_key: str = Body(..., embed=True),
     enabled: bool = Body(..., embed=True),
-    decided_by: str = Body("human", embed=True),
     note: str = Body("", embed=True),
+    user: UserContext = Depends(require_auth),
 ):
     if enabled:
-        governance.authorize_gate(transition_key, actor=decided_by, note=note)
+        governance.authorize_gate(transition_key, actor=user.user_id, note=note)
     else:
-        governance.revoke_gate(transition_key, actor=decided_by, note=note)
-    return dashboard_get_automation()
+        governance.revoke_gate(transition_key, actor=user.user_id, note=note)
+    return dashboard_get_automation(user=user)
 
 DEMO_SCENARIOS = {
     "happy_path": {
@@ -221,14 +222,14 @@ def _case_or_404(case_id: int) -> Dict[str, Any]:
     return row
 
 @router.get("/dashboard/api/automation/pending")
-def list_pending_proposals():
+def list_pending_proposals(user: UserContext = Depends(require_auth)):
     pending = [p for p in DEMO_PROPOSALS if p["status"] == "pending"]
     # newest first
     pending.sort(key=lambda x: x["created_at"], reverse=True)
     return {"items": pending, "count": len(pending)}
 
 @router.get("/dashboard/api/cases/{case_id}")
-def get_case_detail(case_id: int, db=Depends(get_db)):
+def get_case_detail(case_id: int, user: UserContext = Depends(require_auth), db=Depends(get_db)):
     log.info(f"case_detail: case_id={case_id}")
 
     # UI sentinel: no case selected
@@ -301,6 +302,7 @@ def propose_automation(
     payload: Dict[str, Any] = Body(default={}),
     confidence: float = Body(0.75),
     safety_score: float = Body(0.75),
+    user: UserContext = Depends(require_auth),
     db=Depends(get_db),
 ):
     case = _case_or_404(case_id)
@@ -365,8 +367,8 @@ def propose_automation(
 def decide_proposal(
     proposal_id: str,
     decision: str = Body(..., embed=True),
-    decided_by: str = Body("human", embed=True),
     note: str = Body("", embed=True),
+    user: UserContext = Depends(require_auth),
     db=Depends(get_db),
 ):
     try:
@@ -374,20 +376,21 @@ def decide_proposal(
         if not p:
             raise HTTPException(status_code=404, detail="Proposal not found")
         if p.get("status") != "pending":
-            raise HTTPException(status_code=409, detail=f"Proposal already {p.get('status')}")
+            raise HTTPException(status_code=409, detail="Proposal is no longer pending")
         if decision not in ("approve", "reject"):
             raise HTTPException(status_code=400, detail="decision must be approve|reject")
+
+        actor = user.user_id
 
         # update status
         now = _now_iso()
         p["status"] = "approved" if decision == "approve" else "rejected"
 
-        # FIXED: Consolidated attribution fields
         if decision == "approve":
-            p["approved_by"] = decided_by
+            p["approved_by"] = actor
             p["approved_at"] = now
         else:
-            p["rejected_by"] = decided_by
+            p["rejected_by"] = actor
             p["rejected_at"] = now
 
         if "audit" not in p or not isinstance(p["audit"], list):
@@ -396,7 +399,7 @@ def decide_proposal(
         p["audit"].append({
             "ts": now,
             "event": f"decision:{decision}",
-            "meta": {"by": decided_by, "note": note},
+            "meta": {"by": actor, "note": note},
         })
 
         # AME: log human decision on proposal
@@ -406,21 +409,21 @@ def decide_proposal(
         _ame_safe(db, queue=queue, action_type=action.get("type", "advance_queue"),
                   event_type=AMEEventType.PROPOSAL_DECIDED.value,
                   proposal_id=proposal_id,
-                  decision=decision, decision_by=decided_by,
+                  decision=decision, decision_by=actor,
                   decision_reason=note or decision)
 
         return {"ok": True, "proposal": p}
 
     except HTTPException:
         raise
-    except Exception as e:
+    except Exception:
         log.exception("decide_proposal crashed")
-        raise HTTPException(status_code=500, detail=f"decide_proposal error: {type(e).__name__}: {e}")
+        raise HTTPException(status_code=500, detail="Internal error")
 
 @router.post("/dashboard/api/automation/{proposal_id}/execute")
 def execute_proposal(
     proposal_id: str,
-    executed_by: str = Body("system", embed=True),
+    user: UserContext = Depends(require_auth),
     db=Depends(get_db),
 ):
     p = DEMO_PROPOSAL_BY_ID.get(proposal_id)
@@ -520,11 +523,11 @@ def execute_proposal(
     # IMPORTANT: mark executed regardless of branch
     p["status"] = "executed"
     p["executed_at"] = now
-    p["executed_by"] = executed_by
+    p["executed_by"] = user.user_id
     p["audit"].append({
         "ts": now,
         "event": "executed",
-        "meta": {"by": executed_by, "ame_stage": mode},
+        "meta": {"by": user.user_id, "ame_stage": mode},
     })
 
     # AME: log execution + successful outcome
@@ -540,7 +543,7 @@ def execute_proposal(
     return {"ok": True, "proposal": p, "case": case, "ame": ame, "ame_stage": mode}
 
 @router.get("/dashboard/api/scenarios")
-def list_demo_scenarios():
+def list_demo_scenarios(user: UserContext = Depends(require_auth)):
     """
     Returns available demo scenarios for the dashboard dropdown.
     """
@@ -571,7 +574,7 @@ def _demo_repeat_tasks(row: dict, copies: int = 1):
         })
 
 @router.post("/dashboard/api/reset")
-def reset_dashboard(db=Depends(get_db)):
+def reset_dashboard(user: UserContext = Depends(require_role("admin")), db=Depends(get_db)):
     """
     Full reset: clears demo cases, proposals, AME trust data, and governance gates.
     Returns the dashboard to a clean-slate state for a fresh demo.
@@ -616,6 +619,7 @@ def reset_dashboard(db=Depends(get_db)):
 def seed_demo_cases(
     scenario_id: str = Body("happy_path", embed=True),
     seed_all: bool = Body(False, embed=True),
+    user: UserContext = Depends(require_role("admin")),
 ):
     global DEMO_ROWS, DEMO_BY_ID, DEMO_PROPOSALS, DEMO_PROPOSAL_BY_ID
     DEMO_ROWS = []
@@ -667,7 +671,7 @@ def seed_demo_cases(
         return {"ok": True, "count": 1, "id": row["id"]}
 
 @router.get("/dashboard/api/workflows")
-def dashboard_list_workflows(db=Depends(get_db)):
+def dashboard_list_workflows(user: UserContext = Depends(require_auth), db=Depends(get_db)):
     rows = []
 
     # 1) DB workflows (if any)
@@ -700,6 +704,7 @@ def simulate_repetition(
     workflow_id: int = Body(..., embed=True),
     cycles: int = Body(5, embed=True),
     repeat_tasks: bool = Body(False, embed=True),
+    user: UserContext = Depends(require_auth),
     db=Depends(get_db),
 ):
     """
@@ -747,6 +752,7 @@ def simulate_repetition(
 @router.post("/dashboard/api/auto-step")
 def dashboard_auto_step(
     workflow_id: int = Body(..., embed=True),
+    user: UserContext = Depends(require_auth),
     db=Depends(get_db),
 ):
     """

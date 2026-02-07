@@ -281,7 +281,7 @@ def get_scope_status(
         )
     except Exception as e:
         logger.error(f"Failed to get scope status: {e}", exc_info=True)
-        raise HTTPException(status_code=500, detail=str(e))
+        raise HTTPException(status_code=500, detail="Internal error")
 
 
 @router.post("/proposal", response_model=EventResponse, status_code=status.HTTP_201_CREATED)
@@ -336,7 +336,7 @@ def ame_record_proposal(
 
     except Exception as e:
         logger.error(f"Failed to record proposal: {e}", exc_info=True)
-        raise HTTPException(status_code=500, detail=str(e))
+        raise HTTPException(status_code=500, detail="Internal error")
 
 
 @router.post("/decision", response_model=EventResponse)
@@ -387,7 +387,7 @@ def ame_record_decision(
 
     except Exception as e:
         logger.error(f"Failed to record decision: {e}", exc_info=True)
-        raise HTTPException(status_code=500, detail=str(e))
+        raise HTTPException(status_code=500, detail="Internal error")
 
 
 @router.post("/execute", response_model=ExecutionResponse)
@@ -457,7 +457,7 @@ def ame_record_execution(
 
     except Exception as e:
         logger.error(f"Failed to record execution: {e}", exc_info=True)
-        raise HTTPException(status_code=500, detail=str(e))
+        raise HTTPException(status_code=500, detail="Internal error")
 
 
 @router.post("/outcome", response_model=EventResponse)
@@ -509,7 +509,7 @@ def ame_record_outcome(
 
     except Exception as e:
         logger.error(f"Failed to record outcome: {e}", exc_info=True)
-        raise HTTPException(status_code=500, detail=str(e))
+        raise HTTPException(status_code=500, detail="Internal error")
 
 
 @router.post("/rollback/{execution_id}")
@@ -556,8 +556,8 @@ def ame_rollback(
             "rollback_at": ex.rollback_at.isoformat() if ex.rollback_at else None,
         }
 
-    except ValueError as ve:
-        raise HTTPException(status_code=404, detail=str(ve))
+    except ValueError:
+        raise HTTPException(status_code=404, detail="Execution not found or not eligible for rollback")
     except Exception as e:
         logger.error(f"Failed to rollback execution: {e}", exc_info=True)
 
@@ -572,7 +572,7 @@ def ame_rollback(
             status="failure",
         )
 
-        raise HTTPException(status_code=500, detail=str(e))
+        raise HTTPException(status_code=500, detail="Internal error")
 
 
 @router.post("/resolve-mode", response_model=ResolvedModeResponse)
@@ -611,7 +611,7 @@ def ame_resolve_mode(
 
     except Exception as e:
         logger.error(f"Failed to resolve mode: {e}", exc_info=True)
-        raise HTTPException(status_code=500, detail=str(e))
+        raise HTTPException(status_code=500, detail="Internal error")
 
 
 # =====================================

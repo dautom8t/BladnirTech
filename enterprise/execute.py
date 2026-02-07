@@ -226,7 +226,7 @@ def enterprise_execute(
         
         raise HTTPException(
             status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
-            detail=f"Execution failed: {str(e)}"
+            detail="Execution failed due to an internal error"
         )
 
 
@@ -374,7 +374,8 @@ def enterprise_execute_dry_run(
     except HTTPException:
         raise
     except Exception as e:
+        logger.exception("Dry-run validation failed")
         raise HTTPException(
             status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
-            detail=f"Validation failed: {str(e)}"
+            detail="Validation failed due to an internal error"
         )

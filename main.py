@@ -27,6 +27,7 @@ from models.schemas import (
 )
 from services import rules as rules_service
 from services import workflow as workflow_service
+from enterprise.auth import require_auth, require_role, UserContext
 
 from enterprise.execute import router as enterprise_router
 from src.enterprise.ame import router as ame_router
@@ -101,17 +102,17 @@ def demo_ui() -> RedirectResponse:
 # =============================
 
 @app.post("/api/workflows", response_model=WorkflowRead, status_code=status.HTTP_201_CREATED)
-def api_create_workflow(workflow_in: WorkflowCreate, db: Session = Depends(get_db)):
+def api_create_workflow(workflow_in: WorkflowCreate, user: UserContext = Depends(require_auth), db: Session = Depends(get_db)):
     wf = workflow_service.create_workflow(db, workflow_in)
     return workflow_service.to_workflow_read(wf)
 
 @app.get("/api/workflows", response_model=List[WorkflowRead])
-def api_list_workflows(db: Session = Depends(get_db)):
+def api_list_workflows(user: UserContext = Depends(require_auth), db: Session = Depends(get_db)):
     wfs = workflow_service.list_workflows(db)
     return [workflow_service.to_workflow_read(wf) for wf in wfs]
 
 @app.get("/api/workflows/{workflow_id}", response_model=WorkflowRead)
-def api_get_workflow(workflow_id: int = Path(..., gt=0), db: Session = Depends(get_db)):
+def api_get_workflow(workflow_id: int = Path(..., gt=0), user: UserContext = Depends(require_auth), db: Session = Depends(get_db)):
     wf = workflow_service.get_workflow(db, workflow_id)
     if wf is None:
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Workflow not found")
@@ -125,12 +126,13 @@ def api_get_workflow(workflow_id: int = Path(..., gt=0), db: Session = Depends(g
 def api_add_task(
     workflow_id: int = Path(..., gt=0),
     task_in: TaskCreate = Body(...),
-    db: Session = Depends(get_db)
+    user: UserContext = Depends(require_auth),
+    db: Session = Depends(get_db),
 ):
     try:
         task = workflow_service.add_task(db, workflow_id, task_in)
-    except ValueError as e:
-        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail=str(e))
+    except ValueError:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Workflow not found")
     
     # FIXED: Use helper function for consistency
     return TaskRead(
@@ -147,13 +149,14 @@ def api_add_task(
 def api_update_task_state(
     workflow_id: int = Path(..., gt=0),
     task_id: int = Path(..., gt=0),
-    new_state: TaskState = Body(...),  # FIXED: Made required instead of defaulting to COMPLETED
+    new_state: TaskState = Body(...),
+    user: UserContext = Depends(require_auth),
     db: Session = Depends(get_db),
 ):
     try:
         task = workflow_service.update_task_state(db, workflow_id, task_id, new_state)
-    except ValueError as e:
-        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail=str(e))
+    except ValueError:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Task or workflow not found")
     
     return TaskRead(
         id=task.id,
@@ -173,12 +176,13 @@ def api_update_task_state(
 def api_add_event(
     workflow_id: int = Path(..., gt=0),
     event_in: EventCreate = Body(...),
-    db: Session = Depends(get_db)
+    user: UserContext = Depends(require_auth),
+    db: Session = Depends(get_db),
 ):
     try:
         event = workflow_service.add_event(db, workflow_id, event_in)
-    except ValueError as e:
-        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail=str(e))
+    except ValueError:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Workflow not found")
     
     # FIXED: Use event.payload instead of event_in.payload
     return EventRead(
@@ -194,7 +198,7 @@ def api_add_event(
 # =============================
 
 @app.post("/api/rules", response_model=RuleRead, status_code=status.HTTP_201_CREATED)
-def api_create_rule(rule_in: RuleCreate, db: Session = Depends(get_db)):
+def api_create_rule(rule_in: RuleCreate, user: UserContext = Depends(require_role("admin")), db: Session = Depends(get_db)):
     rule = rules_service.create_rule(db, rule_in)
     return RuleRead(
         id=rule.id,
@@ -205,7 +209,7 @@ def api_create_rule(rule_in: RuleCreate, db: Session = Depends(get_db)):
     )
 
 @app.get("/api/rules", response_model=List[RuleRead])
-def api_list_rules(db: Session = Depends(get_db)):
+def api_list_rules(user: UserContext = Depends(require_auth), db: Session = Depends(get_db)):
     rules = rules_service.list_rules(db)
     return [
         RuleRead(

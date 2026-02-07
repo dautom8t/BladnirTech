@@ -25,6 +25,7 @@ from typing import Any, Dict, List, Optional
 from fastapi import APIRouter, Body, Depends
 from fastapi.responses import HTMLResponse, RedirectResponse
 
+from enterprise.auth import require_auth, UserContext
 from models.database import get_db
 from models.schemas import (
     EventCreate,
@@ -117,7 +118,7 @@ def _add_task(db, workflow_id: int, name: str, assigned_to: Optional[str] = None
 # -------------------------
 
 @router.get("/kroger/scenarios")
-def list_kroger_scenarios():
+def list_kroger_scenarios(user: UserContext = Depends(require_auth)):
     return [
         {
             "key": k,
@@ -139,6 +140,7 @@ def kroger_start_scenario(
     store_id: Optional[str] = Body(None, embed=True),
     patient_ref: Optional[str] = Body(None, embed=True),
     contact_method: str = Body("phone", embed=True),  # phone | fax | eRx | sms
+    user: UserContext = Depends(require_auth),
     db=Depends(get_db),
 ):
     if scenario_key not in KROGER_SCENARIOS:
@@ -185,6 +187,7 @@ def kroger_prescriber_approval(
     prescriber_office: str = Body("Prescriber Office", embed=True),
     method: str = Body("eRx", embed=True),  # eRx | fax | phone
     rx_ref: Optional[str] = Body(None, embed=True),
+    user: UserContext = Depends(require_auth),
     db=Depends(get_db),
 ):
     # External event: approval received
@@ -255,6 +258,7 @@ def kroger_submit_preverification(
     days_supply: int = Body(90, embed=True),
     payer: str = Body("Unknown", embed=True),
     insurance_result: str = Body("accepted", embed=True),  # accepted | rejected
+    user: UserContext = Depends(require_auth),
     db=Depends(get_db),
 ):
     # Mark data entry completed (event)
@@ -328,6 +332,7 @@ def kroger_pharmacist_preverify(
     workflow_id: int = Body(..., embed=True),
     decision: str = Body("approved", embed=True),  # approved | rejected
     notes: Optional[str] = Body(None, embed=True),
+    user: UserContext = Depends(require_auth),
     db=Depends(get_db),
 ):
     _add_event(
