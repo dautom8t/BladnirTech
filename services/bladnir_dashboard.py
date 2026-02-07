@@ -250,12 +250,29 @@ def get_case_detail(case_id: int, db=Depends(get_db)):
         if queue:
             nq = next_queue_for(queue)  # preview-only helper (no gating)
             if nq:
+                # ML: predict outcome for the suggested action
+                ml_sug = {}
+                sug_conf, sug_safety = 0.86, 0.92
+                try:
+                    op = _ml_outcome(_AME_SITE)
+                    if op.is_ready:
+                        ml_sug = op.predict_for_action(
+                            db, queue=queue, action_type="advance_queue",
+                            from_queue=queue, to_queue=nq,
+                            tenant_id="default", site_id=_AME_SITE,
+                        )
+                        if not ml_sug.get("cold_start"):
+                            sug_conf = ml_sug["success_probability"]
+                            sug_safety = ml_sug["safety_score"]
+                except Exception:
+                    pass
                 suggested.append({
                     "type": "advance_queue",
                     "label": f"Advance case to next queue from '{queue}'",
                     "payload": {"from_queue": queue, "to_queue": nq},
-                    "confidence": 0.86,
-                    "safety_score": 0.92,
+                    "confidence": sug_conf,
+                    "safety_score": sug_safety,
+                    "ml_outcome": ml_sug,
                 })
 
         ame = _ame_trust_info(db, queue) if queue else {}
@@ -347,6 +364,10 @@ def propose_automation(
             )
     except Exception as exc:
         _ame_log.debug("ML decision skipped: %s", exc)
+
+    # Store ML predictions on the proposal for later display
+    p["ml_decision"] = ml_decision
+    p["ml_outcome"] = ml_outcome
 
     # AME: log proposal creation
     _ame_safe(db, queue=queue, action_type=action_type,
@@ -569,6 +590,49 @@ def _demo_repeat_tasks(row: dict, copies: int = 1):
             "assigned_to": template.get("assigned_to", "—"),
             "state": template.get("state", "open"),
         })
+
+@router.get("/dashboard/api/ml-stats")
+def dashboard_ml_stats(db=Depends(get_db)):
+    """ML model status + learning metrics + ROI for the dashboard UI."""
+    from src.enterprise.ame.models import AMEEvent as _Ev
+    from src.enterprise.ame.ml.trainer import AMETrainer
+
+    total = db.query(_Ev).filter(_Ev.site_id == _AME_SITE, _Ev.deleted_at.is_(None)).count()
+    proposals = db.query(_Ev).filter(
+        _Ev.site_id == _AME_SITE, _Ev.event_type == "proposal_created", _Ev.deleted_at.is_(None),
+    ).count()
+
+    decisions = db.query(_Ev).filter(
+        _Ev.site_id == _AME_SITE, _Ev.event_type == "proposal_decided", _Ev.deleted_at.is_(None),
+    ).all()
+    approved = sum(1 for d in decisions if d.decision == "approve")
+    rejected = sum(1 for d in decisions if d.decision == "reject")
+
+    outcomes = db.query(_Ev).filter(
+        _Ev.site_id == _AME_SITE, _Ev.event_type == "outcome", _Ev.deleted_at.is_(None),
+    ).all()
+    successes = sum(1 for o in outcomes if o.outcome_success)
+    time_saved = sum(float(o.observed_time_saved_sec or 0) for o in outcomes)
+
+    # Count governance-bypassed executions (auto-approved)
+    auto_approved = sum(
+        1 for p in DEMO_PROPOSALS
+        if any(a.get("event") == "governance_bypassed" for a in (p.get("audit") or []))
+    )
+
+    trainer = AMETrainer()
+    models = trainer.get_status()
+
+    return {
+        "events": {"total": total, "proposals": proposals, "approved": approved,
+                    "rejected": rejected, "successes": successes},
+        "roi": {"auto_approved": auto_approved,
+                "human_reviewed": max(0, approved + rejected - auto_approved),
+                "time_saved_sec": round(time_saved, 1),
+                "time_saved_min": round(time_saved / 60, 1)},
+        "models": models,
+    }
+
 
 @router.post("/dashboard/api/reset")
 def reset_dashboard(db=Depends(get_db)):
@@ -984,8 +1048,35 @@ def dashboard_ui():
     .detail-card b{font-size:12px;display:block;margin-bottom:8px}
     pre{white-space:pre-wrap;word-break:break-word;background:#080a0e;border-radius:10px;padding:12px;border:1px solid var(--line);color:#a3e635;font-size:11px;margin-top:8px;max-height:260px;overflow:auto}
 
+    /* --- ML Intelligence Strip --- */
+    .ml-strip{padding:12px 20px;border-bottom:1px solid var(--line);background:rgba(8,11,16,.9)}
+    .ml-strip-header{display:flex;align-items:center;gap:10px;margin-bottom:10px}
+    .ml-strip-title{font-weight:700;font-size:12px;color:#60a5fa;text-transform:uppercase;letter-spacing:.5px}
+    .ml-grid{display:grid;grid-template-columns:1fr 1fr 1fr 1.5fr;gap:10px}
+    .ml-card{background:var(--card);border:1px solid var(--line);border-radius:10px;padding:10px 12px;position:relative}
+    .ml-card-label{font-size:10px;color:var(--muted);font-weight:600;text-transform:uppercase;letter-spacing:.4px}
+    .ml-card-value{font-size:20px;font-weight:700;margin-top:3px;line-height:1.1}
+    .ml-card-sub{font-size:11px;color:var(--muted);margin-top:4px}
+    .ml-dot{display:inline-block;width:7px;height:7px;border-radius:50%;margin-right:5px;vertical-align:middle}
+    .ml-dot.off{background:#6b7280}.ml-dot.on{background:#4ade80}.ml-dot.warn{background:#fbbf24}
+    .roi-grid{display:grid;grid-template-columns:repeat(4,1fr);gap:6px;margin-top:6px}
+    .roi-stat{text-align:center}
+    .roi-num{display:block;font-size:18px;font-weight:700;color:#fff;line-height:1.2}
+    .roi-label{font-size:9px;color:var(--muted);text-transform:uppercase;letter-spacing:.3px}
+
+    /* --- ML prediction in proposals --- */
+    .ml-pred{background:rgba(59,130,246,.08);border:1px solid rgba(59,130,246,.2);border-radius:8px;padding:8px 10px;margin-top:6px;font-size:11px}
+    .ml-pred-row{display:flex;justify-content:space-between;align-items:center;gap:8px}
+    .ml-pred-bar{height:4px;background:rgba(255,255,255,.06);border-radius:2px;flex:1;max-width:80px;overflow:hidden}
+    .ml-pred-fill{height:100%;border-radius:2px}
+    .ml-factors{color:var(--muted);font-size:10px;margin-top:3px}
+
+    /* --- Anomaly alert --- */
+    .anomaly-banner{padding:8px 20px;background:rgba(248,113,113,.1);border-bottom:1px solid rgba(248,113,113,.25);color:#f87171;font-size:12px;display:none;align-items:center;gap:8px}
+    .anomaly-banner.show{display:flex}
+
     /* --- Responsive --- */
-    @media(max-width:960px){.pipeline{flex-wrap:wrap;gap:8px}.pipe-col{min-width:140px;max-width:none;flex:1 1 45%}.pipe-arrow{display:none}.detail-grid{grid-template-columns:1fr}}
+    @media(max-width:960px){.pipeline{flex-wrap:wrap;gap:8px}.pipe-col{min-width:140px;max-width:none;flex:1 1 45%}.pipe-arrow{display:none}.detail-grid{grid-template-columns:1fr}.ml-grid{grid-template-columns:1fr 1fr}}
   </style>
 </head>
 <body>
@@ -993,7 +1084,7 @@ def dashboard_ui():
 <!-- ====== Header ====== -->
 <header>
   <b>Bladnir Tech &mdash; Control Tower</b>
-  <span class="muted">Governed automation &bull; Queue orchestration &bull; Audit-first</span>
+  <span class="muted">Governed automation &bull; Adaptive ML &bull; Audit-first</span>
   <a href="/ame/dashboard" style="margin-left:auto;color:#60a5fa;text-decoration:none;font-size:12px">AME Trust Dashboard</a>
   <span class="muted" id="status">Loading&hellip;</span>
 </header>
@@ -1008,6 +1099,48 @@ def dashboard_ui():
   <div style="flex:1"></div>
   <button onclick="refreshAll()">Refresh</button>
   <button onclick="resetDashboard()" style="color:#f87171;border-color:rgba(248,113,113,.3)">Reset</button>
+</div>
+
+<!-- ====== ML Intelligence Strip ====== -->
+<div class="ml-strip">
+  <div class="ml-strip-header">
+    <span class="ml-strip-title">ML Intelligence</span>
+    <button id="trainBtn" onclick="trainModels()">Train Models</button>
+    <span class="muted" id="trainStatus"></span>
+    <div style="flex:1"></div>
+    <span class="muted" id="mlEventCount">0 events</span>
+  </div>
+  <div class="ml-grid">
+    <div class="ml-card">
+      <div class="ml-card-label"><span class="ml-dot off" id="dotDecision"></span>Decision Predictor</div>
+      <div class="ml-card-value" id="mlDecVal">Untrained</div>
+      <div class="ml-card-sub" id="mlDecSub">Predicts: will human approve?</div>
+    </div>
+    <div class="ml-card">
+      <div class="ml-card-label"><span class="ml-dot off" id="dotOutcome"></span>Outcome Predictor</div>
+      <div class="ml-card-value" id="mlOutVal">Untrained</div>
+      <div class="ml-card-sub" id="mlOutSub">Predicts: will action succeed?</div>
+    </div>
+    <div class="ml-card">
+      <div class="ml-card-label"><span class="ml-dot off" id="dotAnomaly"></span>Anomaly Detector</div>
+      <div class="ml-card-value" id="mlAnoVal">Untrained</div>
+      <div class="ml-card-sub" id="mlAnoSub">Detects unusual event patterns</div>
+    </div>
+    <div class="ml-card">
+      <div class="ml-card-label">Learning &amp; ROI</div>
+      <div class="roi-grid">
+        <div class="roi-stat"><span class="roi-num" id="roiEvents">0</span><span class="roi-label">Events</span></div>
+        <div class="roi-stat"><span class="roi-num" id="roiAuto">0</span><span class="roi-label">Auto-approved</span></div>
+        <div class="roi-stat"><span class="roi-num" id="roiHuman">0</span><span class="roi-label">Human</span></div>
+        <div class="roi-stat"><span class="roi-num" id="roiTime">0m</span><span class="roi-label">Time Saved</span></div>
+      </div>
+    </div>
+  </div>
+</div>
+
+<!-- ====== Anomaly Alert Banner ====== -->
+<div class="anomaly-banner" id="anomalyBanner">
+  <b>Anomaly Detected</b> <span id="anomalyDetail"></span>
 </div>
 
 <!-- ====== Pipeline board (full-width, horizontal) ====== -->
@@ -1074,7 +1207,7 @@ def dashboard_ui():
 </div>
 
 <script>
-let ALL=[], AUTH={}, AME_SCOPES={}, selected=null, repTimer=null, authOpen=false;
+let ALL=[], AUTH={}, AME_SCOPES={}, ML_STATS=null, selected=null, repTimer=null, authOpen=false;
 
 function setStatus(t){ document.getElementById('status').textContent=t }
 
@@ -1250,6 +1383,117 @@ function toggleRepetition(){
   repTimer=setInterval(()=>{simulateOnce().catch(()=>{clearInterval(repTimer);repTimer=null;btn.textContent="Repeat: OFF";setStatus("Ready")})},3000);
 }
 
+/* ---------- ML Intelligence ---------- */
+async function fetchMlStats(){
+  try{
+    ML_STATS=await api("/dashboard/api/ml-stats");
+    renderMlStrip();
+  }catch(e){console.warn("ML stats:",e)}
+}
+
+function renderMlStrip(){
+  if(!ML_STATS)return;
+  const m=ML_STATS.models||{};
+  const ev=ML_STATS.events||{};
+  const roi=ML_STATS.roi||{};
+
+  /* Decision */
+  const dec=m.decision||{};
+  const dotDec=document.getElementById("dotDecision");
+  const decVal=document.getElementById("mlDecVal");
+  const decSub=document.getElementById("mlDecSub");
+  if(dec.trained){
+    dotDec.className="ml-dot on";
+    const acc=((dec.metrics||{}).accuracy||0)*100;
+    decVal.textContent="v"+dec.version+" \\u00b7 "+acc.toFixed(1)+"%";
+    decSub.textContent="Accuracy \\u00b7 trained on "+dec.training_events+" decisions";
+  }else{
+    dotDec.className="ml-dot off";
+    decVal.textContent="Untrained";
+    decSub.textContent="Need 50+ decided proposals";
+  }
+
+  /* Outcome */
+  const out=m.outcome||{};
+  const dotOut=document.getElementById("dotOutcome");
+  const outVal=document.getElementById("mlOutVal");
+  const outSub=document.getElementById("mlOutSub");
+  if(out.trained){
+    dotOut.className="ml-dot on";
+    const acc=((out.metrics||{}).accuracy||0)*100;
+    outVal.textContent="v"+out.version+" \\u00b7 "+acc.toFixed(1)+"%";
+    outSub.textContent="Accuracy \\u00b7 replaces hardcoded values";
+  }else{
+    dotOut.className="ml-dot off";
+    outVal.textContent="Untrained";
+    outSub.textContent="Need 30+ observed outcomes";
+  }
+
+  /* Anomaly */
+  const ano=m.anomaly||{};
+  const dotAno=document.getElementById("dotAnomaly");
+  const anoVal=document.getElementById("mlAnoVal");
+  const anoSub=document.getElementById("mlAnoSub");
+  if(ano.trained){
+    dotAno.className="ml-dot on";
+    const pct=(ano.metrics||{}).anomaly_percentage||0;
+    anoVal.textContent="v"+ano.version+" \\u00b7 "+pct+"%";
+    anoSub.textContent="Baseline anomaly rate \\u00b7 "+(ano.training_windows||0)+" windows";
+  }else{
+    dotAno.className="ml-dot off";
+    anoVal.textContent="Untrained";
+    anoSub.textContent="Need sufficient event history";
+  }
+
+  /* ROI */
+  document.getElementById("roiEvents").textContent=ev.total||0;
+  document.getElementById("roiAuto").textContent=roi.auto_approved||0;
+  document.getElementById("roiHuman").textContent=roi.human_reviewed||0;
+  document.getElementById("roiTime").textContent=(roi.time_saved_min||0)+"m";
+  document.getElementById("mlEventCount").textContent=(ev.total||0)+" events logged";
+}
+
+async function trainModels(){
+  const btn=document.getElementById("trainBtn");
+  const st=document.getElementById("trainStatus");
+  btn.disabled=true;btn.textContent="Training\\u2026";st.textContent="";
+  try{
+    const r=await api("/ame/ml/retrain",{method:"POST",body:"{}"});
+    const res=r.results||{};
+    let parts=[];
+    if(res.decision&&res.decision.trained)parts.push("Decision: "+(res.decision.accuracy*100).toFixed(0)+"%");
+    if(res.outcome&&res.outcome.trained)parts.push("Outcome: "+(res.outcome.accuracy*100).toFixed(0)+"%");
+    if(res.anomaly&&res.anomaly.trained)parts.push("Anomaly: trained");
+    st.textContent=parts.length?parts.join(" \\u00b7 "):"Not enough data yet";
+    await fetchMlStats();
+  }catch(e){
+    st.textContent="Training failed: "+e.message;
+  }finally{
+    btn.disabled=false;btn.textContent="Train Models";
+  }
+}
+
+function renderMlPrediction(mlDec,mlOut){
+  if(!mlDec&&!mlOut)return"";
+  let h='<div class="ml-pred">';
+  if(mlDec&&mlDec.approve_probability!==undefined&&mlDec.confidence_band!=="cold_start"){
+    const pct=Math.round(mlDec.approve_probability*100);
+    const c=pct>=85?"#4ade80":pct>=50?"#fbbf24":"#f87171";
+    h+='<div class="ml-pred-row"><span>Approve: <b style="color:'+c+'">'+pct+'%</b> ('+mlDec.confidence_band+')</span>';
+    h+='<div class="ml-pred-bar"><div class="ml-pred-fill" style="width:'+pct+'%;background:'+c+'"></div></div></div>';
+    if(mlDec.top_factors&&mlDec.top_factors.length){
+      h+='<div class="ml-factors">Factors: '+mlDec.top_factors.map(f=>f[0]+"("+(f[1]>0?"+":"")+f[1]+")").join(", ")+"</div>";
+    }
+  }
+  if(mlOut&&mlOut.success_probability!==undefined&&!mlOut.cold_start){
+    const pct=Math.round(mlOut.success_probability*100);
+    const s=Math.round((mlOut.safety_score||0)*100);
+    h+='<div class="ml-pred-row" style="margin-top:4px"><span>Success: <b>'+pct+'%</b> \\u00b7 Safety: <b>'+s+'%</b></span></div>';
+  }
+  h+="</div>";
+  return h;
+}
+
 /* ---------- Refresh ---------- */
 async function refreshAll(){
   setStatus("Loading\u2026");
@@ -1259,7 +1503,7 @@ async function refreshAll(){
       api("/dashboard/api/automation").catch(e=>{console.error("automation:",e);return{authorizations:{}}})
     ]);
     ALL=d1.workflows||[];AUTH=d2.authorizations||{};
-    await fetchAmeScopes();
+    await Promise.all([fetchAmeScopes(),fetchMlStats().catch(()=>{})]);
     renderBoard();
     if(selected){const wf=ALL.find(x=>x.id===selected.id);if(wf)renderDetails(wf)}
     if(authOpen)refreshAuthModal().catch(()=>{});
@@ -1285,7 +1529,8 @@ async function refreshAuthModal(){
   else{
     sugEl.innerHTML=sug.map(a=>{
       const enc=encodeURIComponent(JSON.stringify(a));
-      return '<div class="item"><b>'+a.label+'</b><div class="muted" style="margin-top:4px">confidence: '+(a.confidence||0).toFixed(2)+' \u2022 safety: '+(a.safety_score||0).toFixed(2)+'</div><div style="height:8px"></div><button class="js-cp" data-enc="'+enc+'">Create Proposal</button></div>';
+      const mlHtml=renderMlPrediction(null,a.ml_outcome||null);
+      return '<div class="item"><b>'+a.label+'</b><div class="muted" style="margin-top:4px">confidence: '+(a.confidence||0).toFixed(2)+' \u2022 safety: '+(a.safety_score||0).toFixed(2)+'</div>'+mlHtml+'<div style="height:8px"></div><button class="js-cp" data-enc="'+enc+'">Create Proposal</button></div>';
     }).join("");
     sugEl.querySelectorAll(".js-cp").forEach(b=>{b.onclick=()=>{createProposal(JSON.parse(decodeURIComponent(b.getAttribute("data-enc"))))}});
   }
@@ -1297,11 +1542,12 @@ async function refreshAuthModal(){
     pEl.innerHTML=props.map(p=>{
       const a=p.action||{},st=p.status||"unknown";
       const aud=(p.audit||[]).slice().reverse().slice(0,4).map(x=>'<div class="muted">\u2022 '+x.ts+': '+x.event+'</div>').join("");
+      const mlHtml=renderMlPrediction(p.ml_decision||null,p.ml_outcome||null);
       let btns="";
       if(st==="pending")btns='<button onclick="decideProposal(\\''+p.id+'\\',\\'approve\\')">Approve</button> <button onclick="decideProposal(\\''+p.id+'\\',\\'reject\\')">Reject</button>';
       else if(st==="approved")btns='<button class="primary" onclick="executeProposal(\\''+p.id+'\\')">Execute</button>';
       else btns='<span class="pill">'+st+'</span>';
-      return '<div class="item"><b>'+p.id+'</b> <span class="pill" style="margin-left:6px">'+st+'</span><div class="muted" style="margin-top:4px">'+(a.label||a.type||"action")+'</div><div style="height:6px"></div><div style="display:flex;gap:6px">'+btns+'</div><div style="height:6px"></div>'+aud+'</div>';
+      return '<div class="item"><b>'+p.id+'</b> <span class="pill" style="margin-left:6px">'+st+'</span><div class="muted" style="margin-top:4px">'+(a.label||a.type||"action")+'</div>'+mlHtml+'<div style="height:6px"></div><div style="display:flex;gap:6px">'+btns+'</div><div style="height:6px"></div>'+aud+'</div>';
     }).join("");
   }
 }
