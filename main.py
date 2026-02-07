@@ -48,7 +48,7 @@ if settings.auto_create_tables:
     except Exception as e:
         logger.error(f"Failed to create database tables: {e}")
 
-app = FastAPI(title="Bladnir Tech - Control Tower")
+app = FastAPI(title="Bladnir Tech - PactGate™")
 
 # Include routers
 app.include_router(kroger_router)

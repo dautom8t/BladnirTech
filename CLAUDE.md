@@ -1,8 +1,8 @@
-# CLAUDE.md — BladnirTech Control Tower
+# CLAUDE.md — Bladnir Tech PactGate™
 
 ## Project Overview
 
-BladnirTech is a **workflow orchestration middleware platform** built with FastAPI. It provides a "Control Tower" for managing automated workflows with human governance gates, a rules engine, and audit-first architecture. The primary demo scenario targets Kroger retail pharmacy prescription refill workflows.
+BladnirTech is a **workflow orchestration middleware platform** built with FastAPI. It provides **PactGate™**, a governance-first platform for managing automated workflows with human governance gates, AME™ (Adaptive Model Evolution) trust stages, a rules engine, and audit-first architecture. The primary demo scenario targets Kroger retail pharmacy prescription refill workflows.
 
 ## Tech Stack
 

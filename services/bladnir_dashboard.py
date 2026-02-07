@@ -1061,7 +1061,7 @@ def dashboard_ui():
 <head>
   <meta charset="utf-8"/>
   <meta name="viewport" content="width=device-width,initial-scale=1"/>
-  <title>Bladnir Tech — Control Tower</title>
+  <title>Bladnir Tech — PactGate™</title>
   <style>
     :root{
       --bg:#0b0f14;--card:#111823;--line:#1f2a36;--text:#eaeaea;--muted:#9bb0c5;
@@ -1162,7 +1162,7 @@ def dashboard_ui():
 
 <!-- ====== Header ====== -->
 <header>
-  <b>Bladnir Tech &mdash; Control Tower</b>
+  <b>Bladnir Tech &mdash; PactGate&trade;</b>
   <span class="muted">Governed automation &bull; Adaptive ML &bull; Audit-first</span>
   <a href="/ame/dashboard" style="margin-left:auto;color:#60a5fa;text-decoration:none;font-size:12px">AME Trust Dashboard</a>
   <span class="muted" id="status">Loading&hellip;</span>
