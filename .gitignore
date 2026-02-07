@@ -19,6 +19,11 @@ data/
 .env
 *.env
 
+# Testing / Coverage
+.coverage
+htmlcov/
+.pytest_cache/
+
 # IDE
 .vscode/
 .idea/
