@@ -32,10 +32,10 @@ class AMEConfig:
     # Recency decay (higher = faster decay, more weight to recent)
     lambda_decay: float = 0.03
 
-    # Minimum evidence to progress
-    min_observations: int = 25
-    min_proposals: int = 20
-    min_executions: int = 10
+    # Minimum evidence to progress (low for demo; raise for production)
+    min_observations: int = 6
+    min_proposals: int = 3
+    min_executions: int = 3
 
     # Stage promotion thresholds
     observe_to_propose: float = 0.40
@@ -71,7 +71,7 @@ class AMEConfig:
 
     # Metric computation
     max_events_to_analyze: int = 500
-    metric_cache_seconds: int = 300  # 5 minutes
+    metric_cache_seconds: int = 0  # Recompute on every event (demo-safe; raise for production)
 
 
 # =====================================
@@ -79,8 +79,8 @@ class AMEConfig:
 # =====================================
 
 def _now() -> datetime:
-    """Return current UTC datetime (timezone-aware)."""
-    return datetime.now(timezone.utc)
+    """Return current UTC datetime (naive — compatible with SQLite which strips tzinfo)."""
+    return datetime.utcnow()
 
 
 def _weight(ts: datetime, now: datetime, lambda_decay: float) -> float:
@@ -301,8 +301,15 @@ def _recompute_scope_if_needed(db: Session, scope: AMETrustScope, cfg: Optional[
     cfg = cfg or AMEConfig()
     now = _now()
 
-    # Check cache TTL
-    if scope.updated_at and (now - scope.updated_at).total_seconds() < cfg.metric_cache_seconds:
+    # Always recompute if scope has never had metrics computed (bootstrapping)
+    never_computed = (
+        float(scope.trust_score) == 0.0
+        and scope.total_proposals == 0
+        and scope.successful_executions == 0
+    )
+
+    # Check cache TTL — skip for never-computed scopes so metrics update immediately
+    if not never_computed and scope.updated_at and (now - scope.updated_at).total_seconds() < cfg.metric_cache_seconds:
         logger.debug(f"Skipping recompute (cache fresh): {scope}")
         return
 
@@ -376,15 +383,14 @@ def _compute_scope_metrics(
             AMEEvent.action_type == action_type,
             AMEEvent.deleted_at.is_(None),
         )
-        .order_by(desc(AMEEvent.ts))
-        .limit(cfg.max_events_to_analyze)
     )
+    # role_context filter MUST come before order_by/limit
     if role_context is not None:
         q = q.filter(AMEEvent.role_context == role_context)
     else:
         q = q.filter(AMEEvent.role_context.is_(None))
 
-    events = q.all()
+    events = q.order_by(desc(AMEEvent.ts)).limit(cfg.max_events_to_analyze).all()
 
     if not events:
         return {
