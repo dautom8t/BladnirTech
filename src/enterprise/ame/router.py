@@ -30,6 +30,8 @@ from .service import (
     rollback_execution,
 )
 from .models import AMEEventType, AMETrustScope, AMEEvent
+from .ml.trainer import AMETrainer
+from .ml import clear_cache as _ml_clear_cache
 
 logger = logging.getLogger(__name__)
 
@@ -688,6 +690,41 @@ def list_recent_events(
         }
         for e in events
     ]
+
+
+# =====================================
+# ML Model Endpoints
+# =====================================
+
+@router.get("/ml/status")
+def ame_ml_status(
+    user: UserContext = Depends(require_auth),
+):
+    """Get status of all ML models: versions, training metrics, drift info."""
+    trainer = AMETrainer()
+    return trainer.get_status()
+
+
+@router.post("/ml/retrain")
+def ame_ml_retrain(
+    user: UserContext = Depends(require_role("admin")),
+    db: Session = Depends(get_db),
+):
+    """Retrain all ML models on current event data. Requires admin role."""
+    trainer = AMETrainer()
+    results = trainer.train_all(db)
+    _ml_clear_cache()
+    return {"ok": True, "results": results}
+
+
+@router.get("/ml/retrain/check")
+def ame_ml_retrain_check(
+    user: UserContext = Depends(require_auth),
+    db: Session = Depends(get_db),
+):
+    """Check if any models need retraining."""
+    trainer = AMETrainer()
+    return trainer.check_retrain_needed(db)
 
 
 # =====================================

@@ -20,6 +20,11 @@ from src.enterprise.ame.service import (
     create_execution as _ame_create_execution,
 )
 from src.enterprise.ame.models import AMEEventType
+from src.enterprise.ame.ml import (
+    get_decision_predictor as _ml_decision,
+    get_outcome_predictor as _ml_outcome,
+    clear_cache as _ml_clear_cache,
+)
 
 router = APIRouter(tags=["dashboard"])
 
@@ -301,6 +306,22 @@ def propose_automation(
     case = _case_or_404(case_id)
     queue = case.get("queue", "unknown")
 
+    # --- ML: Outcome Predictor (replaces hardcoded confidence/safety if trained) ---
+    ml_outcome = {}
+    try:
+        outcome_pred = _ml_outcome(_AME_SITE)
+        if outcome_pred.is_ready:
+            ml_outcome = outcome_pred.predict_for_action(
+                db, queue=queue, action_type=action_type,
+                from_queue=queue, to_queue=payload.get("to_queue", ""),
+                tenant_id="default", site_id=_AME_SITE,
+            )
+            if not ml_outcome.get("cold_start"):
+                confidence = ml_outcome["success_probability"]
+                safety_score = ml_outcome["safety_score"]
+    except Exception as exc:
+        _ame_log.debug("ML outcome skipped: %s", exc)
+
     # --- AME Stage Resolution (proposals are how the system learns, always allowed) ---
     mode, meta = _ame_resolve_safe(db, queue=queue, action_type=action_type,
                                    confidence=confidence, safety=safety_score)
@@ -314,6 +335,19 @@ def propose_automation(
     }
     p = _mk_proposal(case_id, action)
 
+    # --- ML: Decision Predictor (predict approval probability) ---
+    ml_decision = {}
+    try:
+        decision_pred = _ml_decision(_AME_SITE)
+        if decision_pred.is_ready:
+            ml_decision = decision_pred.predict_for_proposal(
+                db, queue=queue, action_type=action_type,
+                confidence=confidence, safety=safety_score,
+                tenant_id="default", site_id=_AME_SITE,
+            )
+    except Exception as exc:
+        _ame_log.debug("ML decision skipped: %s", exc)
+
     # AME: log proposal creation
     _ame_safe(db, queue=queue, action_type=action_type,
               event_type=AMEEventType.PROPOSAL_CREATED.value,
@@ -322,7 +356,10 @@ def propose_automation(
               predicted_safety=safety_score,
               context={"case_id": case_id, "label": label})
 
-    return {"ok": True, "proposal": p, "ame_stage": mode}
+    return {
+        "ok": True, "proposal": p, "ame_stage": mode,
+        "ml_decision": ml_decision, "ml_outcome": ml_outcome,
+    }
 
 @router.post("/dashboard/api/automation/{proposal_id}/decide")
 def decide_proposal(
@@ -533,6 +570,48 @@ def _demo_repeat_tasks(row: dict, copies: int = 1):
             "state": template.get("state", "open"),
         })
 
+@router.post("/dashboard/api/reset")
+def reset_dashboard(db=Depends(get_db)):
+    """
+    Full reset: clears demo cases, proposals, AME trust data, and governance gates.
+    Returns the dashboard to a clean-slate state for a fresh demo.
+    """
+    global DEMO_ROWS, DEMO_BY_ID, DEMO_PROPOSALS, DEMO_PROPOSAL_BY_ID
+
+    # 1. Clear in-memory demo data
+    DEMO_ROWS = []
+    DEMO_BY_ID = {}
+    DEMO_PROPOSALS = []
+    DEMO_PROPOSAL_BY_ID = {}
+
+    # 2. Clear AME trust tables
+    from src.enterprise.ame.models import AMETrustScope, AMEEvent, AMEExecution
+    try:
+        db.query(AMEExecution).delete()
+        db.query(AMEEvent).delete()
+        db.query(AMETrustScope).delete()
+        db.commit()
+        log.info("AME trust data cleared")
+    except Exception as exc:
+        db.rollback()
+        log.warning("AME reset failed: %s", exc)
+
+    # 3. Reset governance gates
+    try:
+        governance.reset_all_gates(actor="dashboard_reset", note="Dashboard full reset")
+        log.info("Governance gates reset")
+    except Exception as exc:
+        log.warning("Governance reset failed: %s", exc)
+
+    # 4. Clear ML model cache (so fresh models are loaded after retrain)
+    try:
+        _ml_clear_cache()
+        log.info("ML model cache cleared")
+    except Exception as exc:
+        log.warning("ML cache clear failed: %s", exc)
+
+    return {"ok": True, "message": "Dashboard reset to clean slate"}
+
 @router.post("/dashboard/api/seed")
 def seed_demo_cases(
     scenario_id: str = Body("happy_path", embed=True),
@@ -691,7 +770,26 @@ def dashboard_auto_step(
         to_q = t["to"]
         gk = t["gate"]
 
-        mode, meta = _ame_resolve_safe(db, queue=cur_queue, action_type="advance_queue")
+        # ML: Use Outcome Predictor for confidence/safety (replaces hardcoded 0.86/0.92)
+        ml_conf, ml_safety = 0.86, 0.92
+        try:
+            op = _ml_outcome(_AME_SITE)
+            if op.is_ready:
+                ml_pred = op.predict_for_action(
+                    db, queue=cur_queue, action_type="advance_queue",
+                    from_queue=cur_queue, to_queue=to_q,
+                    tenant_id="default", site_id=_AME_SITE,
+                )
+                if not ml_pred.get("cold_start"):
+                    ml_conf = ml_pred["success_probability"]
+                    ml_safety = ml_pred["safety_score"]
+        except Exception as exc:
+            _ame_log.debug("ML outcome in auto-step skipped: %s", exc)
+
+        mode, meta = _ame_resolve_safe(
+            db, queue=cur_queue, action_type="advance_queue",
+            confidence=ml_conf, safety=ml_safety,
+        )
 
         exe_record = None
         if mode in ("guarded_auto", "conditional_auto", "full_auto"):
@@ -740,11 +838,13 @@ def dashboard_auto_step(
         row["queue"] = nxt
         row["events"] = len(row["raw"].get("events") or [])
 
-        # AME: log auto-step as a complete trust cycle
+        # AME: log auto-step as a complete trust cycle (use ML-predicted confidence/safety)
         pid = f"dash-{uuid.uuid4().hex[:8]}"
+        _step_conf = meta.get("model_confidence", 0.86)
+        _step_safety = meta.get("model_safety", 0.92)
         _ame_safe(db, queue=cur, action_type="advance_queue",
                   event_type=AMEEventType.PROPOSAL_CREATED.value,
-                  proposal_id=pid, predicted_confidence=0.86, predicted_safety=0.92,
+                  proposal_id=pid, predicted_confidence=_step_conf, predicted_safety=_step_safety,
                   predicted_time_saved_sec=30.0,
                   context={"transition": f"{cur}→{nxt}", "workflow_id": workflow_id,
                            "ame_stage": mode})
@@ -779,11 +879,13 @@ def dashboard_auto_step(
     workflow_service.add_event(db, workflow_id, EventCreate(
         event_type="queue_changed", payload={"from": cur, "to": nxt}))
 
-    # AME: log auto-step trust cycle for DB workflows
+    # AME: log auto-step trust cycle for DB workflows (use ML-predicted values)
     pid = f"dash-{uuid.uuid4().hex[:8]}"
+    _step_conf = meta.get("model_confidence", 0.86)
+    _step_safety = meta.get("model_safety", 0.92)
     _ame_safe(db, queue=cur, action_type="advance_queue",
               event_type=AMEEventType.PROPOSAL_CREATED.value,
-              proposal_id=pid, predicted_confidence=0.86, predicted_safety=0.92,
+              proposal_id=pid, predicted_confidence=_step_conf, predicted_safety=_step_safety,
               predicted_time_saved_sec=30.0,
               context={"transition": f"{cur}→{nxt}", "workflow_id": workflow_id,
                        "ame_stage": mode})
@@ -905,6 +1007,7 @@ def dashboard_ui():
   <input id="search" placeholder="Search cases&hellip;" oninput="renderBoard()" style="flex:1;min-width:100px;max-width:260px"/>
   <div style="flex:1"></div>
   <button onclick="refreshAll()">Refresh</button>
+  <button onclick="resetDashboard()" style="color:#f87171;border-color:rgba(248,113,113,.3)">Reset</button>
 </div>
 
 <!-- ====== Pipeline board (full-width, horizontal) ====== -->
@@ -1214,6 +1317,19 @@ async function decideProposal(pid,decision){
 async function executeProposal(pid){
   try{await api("/dashboard/api/automation/"+pid+"/execute",{method:"POST",body:JSON.stringify({executed_by:"system"})})}catch(e){alert(e.message)}
   await refreshAll();await refreshAuthModal();
+}
+
+/* ---------- Reset ---------- */
+async function resetDashboard(){
+  if(!confirm("Reset everything? This clears all cases, proposals, AME trust data, and governance gates."))return;
+  setStatus("Resetting\u2026");
+  try{
+    await api("/dashboard/api/reset",{method:"POST",body:"{}"});
+    selected=null;
+    document.getElementById("detailPanel").classList.remove("open");
+    await refreshAll();
+    setStatus("Reset complete");
+  }catch(e){console.error("reset:",e);setStatus("Reset failed")}
 }
 
 /* ---------- Boot ---------- */

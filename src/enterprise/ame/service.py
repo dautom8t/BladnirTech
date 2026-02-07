@@ -787,6 +787,23 @@ def resolve_execution_mode(
         anomaly = True
         anomaly_reasons.append(f"low_safety({model_safety:.2f})")
 
+    # ML Anomaly Detector (augments static checks)
+    ml_anomaly: Optional[Dict[str, Any]] = None
+    try:
+        from .ml import get_anomaly_detector
+        detector = get_anomaly_detector()
+        if detector.is_ready:
+            ml_anomaly = detector.check_current_window(
+                db, tenant_id=tenant_id, site_id=site_id,
+            )
+            if ml_anomaly and ml_anomaly.get("is_anomaly"):
+                anomaly = True
+                anomaly_reasons.append(
+                    f"ml_anomaly({ml_anomaly.get('anomaly_type', 'unknown')})"
+                )
+    except Exception as e:
+        logger.debug(f"ML anomaly check skipped: {e}")
+
     if anomaly and stage in (
         AMEStage.GUARDED_AUTO.value,
         AMEStage.CONDITIONAL_AUTO.value,
@@ -798,6 +815,7 @@ def resolve_execution_mode(
             "original_stage": stage,
             "trust": trust,
             "stage": AMEStage.PROPOSE.value,
+            "ml_anomaly": ml_anomaly,
         }
 
     return stage, {
@@ -806,4 +824,5 @@ def resolve_execution_mode(
         "stage": stage,
         "model_confidence": model_confidence,
         "model_safety": model_safety,
+        "ml_anomaly": ml_anomaly,
     }
