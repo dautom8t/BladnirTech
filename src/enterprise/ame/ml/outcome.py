@@ -29,9 +29,9 @@ try:
 except ImportError:
     HAS_SKLEARN = False
 
-# Minimum requirements
-MIN_OUTCOMES = 30
-MIN_FAILURES = 5
+# Minimum requirements (low for demo; raise for production)
+MIN_OUTCOMES = 10
+MIN_FAILURES = 2
 
 # Cold start: identical to existing hardcoded values
 COLD_START = {
@@ -98,9 +98,17 @@ class OutcomePredictor:
             n_estimators=100, max_depth=4, learning_rate=0.1, random_state=42,
         )
 
-        # Calibrate probabilities (important: we use probability as predicted_confidence)
-        model = CalibratedClassifierCV(base, cv=3, method="isotonic")
-        model.fit(X_train, y_train)
+        # Calibrate probabilities — adapt cv to available minority class samples
+        min_class_count = int(min(np.sum(y_train == 0), np.sum(y_train == 1)))
+        cv_folds = max(2, min(3, min_class_count))
+
+        if min_class_count >= 2:
+            model = CalibratedClassifierCV(base, cv=cv_folds, method="sigmoid")
+            model.fit(X_train, y_train)
+        else:
+            # Too few minority samples for calibration; use base model directly
+            base.fit(X_train, y_train)
+            model = base
 
         y_pred = model.predict(X_test)
         y_proba = model.predict_proba(X_test)[:, 1]
@@ -118,7 +126,10 @@ class OutcomePredictor:
 
         # Feature importances from base estimator
         try:
-            base_model = model.calibrated_classifiers_[0].estimator
+            if hasattr(model, 'calibrated_classifiers_'):
+                base_model = model.calibrated_classifiers_[0].estimator
+            else:
+                base_model = model
             importances = dict(zip(self._feature_names, base_model.feature_importances_.tolist()))
         except (AttributeError, IndexError):
             importances = {}
@@ -158,7 +169,10 @@ class OutcomePredictor:
             # Risk factors from feature importances
             risk_factors = []
             try:
-                base_model = self.model.calibrated_classifiers_[0].estimator
+                if hasattr(self.model, 'calibrated_classifiers_'):
+                    base_model = self.model.calibrated_classifiers_[0].estimator
+                else:
+                    base_model = self.model
                 imp = base_model.feature_importances_
                 for idx in np.argsort(imp)[::-1][:3]:
                     name = self._feature_names[idx] if idx < len(self._feature_names) else f"f{idx}"

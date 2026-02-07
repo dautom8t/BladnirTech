@@ -5,6 +5,7 @@ from fastapi import APIRouter, Body, Depends, HTTPException
 from fastapi.responses import HTMLResponse
 from datetime import datetime
 from typing import Dict, Any, List
+import os
 import uuid
 import logging
 log = logging.getLogger("uvicorn.error")
@@ -634,6 +635,79 @@ def dashboard_ml_stats(db=Depends(get_db)):
     }
 
 
+@router.post("/dashboard/api/seed-ml")
+def seed_ml_training_data(db=Depends(get_db)):
+    """
+    Seed realistic ML training data: a mix of approvals, rejections, successes,
+    and failures across all queues. Generates enough events to train all 3 models.
+    """
+    import random
+    from datetime import timedelta
+    from src.enterprise.ame.models import AMEEvent
+
+    random.seed(42)
+    now = datetime.utcnow()
+    queues = list(TRANSITIONS.keys())
+    created = 0
+
+    # Generate 80 events spread over 24 hours (enough for anomaly windows)
+    n_events = 80
+    for i in range(n_events):
+        q = queues[i % len(queues)]
+        ts = now - timedelta(hours=24) + timedelta(minutes=i * 18)  # ~18 min apart over 24h
+        pid = f"seed-{uuid.uuid4().hex[:8]}"
+
+        # Proposal
+        conf = 0.65 + random.random() * 0.30
+        safety = 0.70 + random.random() * 0.25
+        db.add(AMEEvent(
+            tenant_id="default", site_id=_AME_SITE, queue=q,
+            action_type="advance_queue", event_type="proposal_created",
+            proposal_id=pid, predicted_confidence=round(conf, 3),
+            predicted_safety=round(safety, 3),
+            predicted_time_saved_sec=20 + random.random() * 20,
+            ts=ts,
+        ))
+
+        # Decision: 70% approve, 30% reject (more rejections for training)
+        decision = "approve" if random.random() < 0.70 else "reject"
+        db.add(AMEEvent(
+            tenant_id="default", site_id=_AME_SITE, queue=q,
+            action_type="advance_queue", event_type="proposal_decided",
+            proposal_id=pid, decision=decision, decision_by="demo_pharmacist",
+            decision_reason="seeded decision",
+            ts=ts + timedelta(seconds=15),
+        ))
+
+        # Outcome (only for approved): 80% success, 20% failure
+        if decision == "approve":
+            success = random.random() < 0.80
+            db.add(AMEEvent(
+                tenant_id="default", site_id=_AME_SITE, queue=q,
+                action_type="advance_queue", event_type="outcome",
+                proposal_id=pid, outcome_success=success,
+                observed_error=not success,
+                observed_time_saved_sec=25 + random.random() * 15 if success else 0,
+                ts=ts + timedelta(seconds=30),
+            ))
+
+        created += 1
+
+    try:
+        db.commit()
+    except Exception:
+        db.rollback()
+        raise
+
+    # Auto-train after seeding
+    from src.enterprise.ame.ml.trainer import AMETrainer
+    trainer = AMETrainer()
+    results = trainer.train_all(db)
+    _ml_clear_cache()
+
+    return {"ok": True, "events_created": created, "training_results": results}
+
+
 @router.post("/dashboard/api/reset")
 def reset_dashboard(db=Depends(get_db)):
     """
@@ -667,9 +741,14 @@ def reset_dashboard(db=Depends(get_db)):
     except Exception as exc:
         log.warning("Governance reset failed: %s", exc)
 
-    # 4. Clear ML model cache (so fresh models are loaded after retrain)
+    # 4. Clear ML model cache and persisted model files
     try:
         _ml_clear_cache()
+        import shutil
+        model_dir = os.path.join("data", "models")
+        if os.path.isdir(model_dir):
+            shutil.rmtree(model_dir)
+            log.info("ML model files removed: %s", model_dir)
         log.info("ML model cache cleared")
     except Exception as exc:
         log.warning("ML cache clear failed: %s", exc)
@@ -1105,6 +1184,7 @@ def dashboard_ui():
 <div class="ml-strip">
   <div class="ml-strip-header">
     <span class="ml-strip-title">ML Intelligence</span>
+    <button onclick="seedMlData()" style="background:rgba(59,130,246,.15);border-color:rgba(59,130,246,.3);color:#60a5fa">Seed ML Data</button>
     <button id="trainBtn" onclick="trainModels()">Train Models</button>
     <span class="muted" id="trainStatus"></span>
     <div style="flex:1"></div>
@@ -1471,6 +1551,21 @@ async function trainModels(){
   }finally{
     btn.disabled=false;btn.textContent="Train Models";
   }
+}
+
+async function seedMlData(){
+  const st=document.getElementById("trainStatus");
+  st.textContent="Seeding training data + training models\\u2026";
+  try{
+    const r=await api("/dashboard/api/seed-ml",{method:"POST",body:"{}"});
+    const res=r.training_results||{};
+    let parts=[];
+    if(res.decision&&res.decision.trained)parts.push("Decision: "+((res.decision.metrics||{}).accuracy*100).toFixed(0)+"%");
+    if(res.outcome&&res.outcome.trained)parts.push("Outcome: "+((res.outcome.metrics||{}).accuracy*100).toFixed(0)+"%");
+    if(res.anomaly&&res.anomaly.trained)parts.push("Anomaly: trained");
+    st.textContent=r.events_created+" events seeded"+(parts.length?" \\u00b7 "+parts.join(" \\u00b7 "):"");
+    await fetchMlStats();
+  }catch(e){st.textContent="Seed failed: "+e.message}
 }
 
 function renderMlPrediction(mlDec,mlOut){

@@ -28,9 +28,9 @@ try:
 except ImportError:
     HAS_SKLEARN = False
 
-# Minimum requirements
-MIN_DECIDED = 50
-MIN_REJECTIONS = 10
+# Minimum requirements (low for demo; raise for production)
+MIN_DECIDED = 15
+MIN_REJECTIONS = 3
 
 COLD_START = {
     "approve_probability": 0.5,
