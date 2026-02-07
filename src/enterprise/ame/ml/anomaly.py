@@ -26,9 +26,9 @@ try:
 except ImportError:
     HAS_SKLEARN = False
 
-# Minimum requirements
-MIN_EVENTS = 100
-MIN_DAYS = 3
+# Minimum requirements (low for demo; raise for production)
+MIN_EVENTS = 20
+MIN_DAYS = 0
 
 NORMAL = {
     "is_anomaly": False,

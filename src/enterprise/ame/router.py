@@ -802,7 +802,7 @@ def ame_dashboard_ui():
   <b>AME Trust Dashboard</b>
   <span class="muted">Adaptive Model Evolution — Live Trust Metrics</span>
   <div class="nav-links" style="margin-left:auto">
-    <a href="/dashboard">Control Tower</a>
+    <a href="/dashboard">PactGate™</a>
   </div>
   <button class="btn" onclick="loadAll()">Refresh</button>
   <span class="muted" id="lastUpdate"></span>

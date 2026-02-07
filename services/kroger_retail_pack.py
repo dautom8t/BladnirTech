@@ -369,7 +369,7 @@ def kroger_pharmacist_preverify(
 
 
 # -------------------------
-# /kroger redirects to the Control Tower dashboard
+# /kroger redirects to the PactGate™ dashboard
 # -------------------------
 
 @router.get("/kroger")
