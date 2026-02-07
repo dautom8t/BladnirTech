@@ -1,0 +1,36 @@
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+python_files = ["test_*.py"]
+python_classes = ["Test*"]
+python_functions = ["test_*"]
+addopts = "-v --tb=short --strict-markers --timeout=30"
+markers = [
+    "unit: Unit tests (fast, no external deps)",
+    "integration: Integration tests (full request cycle)",
+    "auth: Authentication and authorization tests",
+]
+
+[tool.coverage.run]
+source = ["services", "enterprise", "models", "src/enterprise/ame"]
+omit = [
+    "tests/*",
+    "services/bladnir_dashboard.py",
+    "services/demo_hub.py",
+    "services/kroger_retail_pack.py",
+    "services/integration.py",
+    "src/enterprise/ame/ml/*",
+]
+
+[tool.coverage.report]
+fail_under = 70
+show_missing = true
+exclude_lines = [
+    "pragma: no cover",
+    "if __name__ ==",
+    "logger\\.",
+    "log\\.",
+]
+
+[tool.bandit]
+exclude_dirs = ["tests"]
+skips = ["B101"]  # assert used in tests
