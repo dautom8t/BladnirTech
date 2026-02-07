@@ -986,6 +986,41 @@ def dashboard_ui():
 
     /* --- Responsive --- */
     @media(max-width:960px){.pipeline{flex-wrap:wrap;gap:8px}.pipe-col{min-width:140px;max-width:none;flex:1 1 45%}.pipe-arrow{display:none}.detail-grid{grid-template-columns:1fr}}
+
+    /* --- Tutorial Overlay --- */
+    .tut-backdrop{position:fixed;inset:0;z-index:10000;pointer-events:none;transition:opacity .3s}
+    .tut-backdrop.hidden{opacity:0;display:none}
+    .tut-backdrop-fill{position:absolute;inset:0;background:rgba(0,0,0,.62);pointer-events:auto}
+    .tut-spotlight{position:absolute;border-radius:10px;box-shadow:0 0 0 9999px rgba(0,0,0,.62);pointer-events:none;transition:top .35s,left .35s,width .35s,height .35s;z-index:10001}
+    .tut-tooltip{position:absolute;z-index:10002;background:#151d2b;color:#eaeaea;border:1px solid rgba(255,255,255,.15);border-radius:12px;padding:16px 18px;max-width:340px;min-width:220px;box-shadow:0 8px 32px rgba(0,0,0,.5);pointer-events:auto;transition:top .35s,left .35s}
+    .tut-tooltip h3{margin:0 0 6px;font-size:14px;font-weight:700}
+    .tut-tooltip p{margin:0 0 12px;font-size:12.5px;color:#b0c4d8;line-height:1.5}
+    .tut-tooltip .tut-step-label{font-size:10px;color:#6b7a8d;margin-bottom:8px;text-transform:uppercase;letter-spacing:.5px}
+    .tut-nav{display:flex;align-items:center;gap:8px}
+    .tut-nav button{font-size:12px;padding:6px 14px;border-radius:8px;border:1px solid rgba(255,255,255,.15);background:transparent;color:#eaeaea;cursor:pointer}
+    .tut-nav button:hover{background:rgba(255,255,255,.07)}
+    .tut-nav button.tut-primary{background:#3b82f6;border-color:#3b82f6;color:#fff;font-weight:700}
+    .tut-nav button.tut-primary:hover{background:#2563eb}
+    .tut-nav .tut-skip{margin-left:auto;font-size:11px;color:#6b7a8d;cursor:pointer;border:none;background:none;padding:4px}
+    .tut-nav .tut-skip:hover{color:#eaeaea}
+    .tut-dots{display:flex;gap:4px;margin-right:8px}
+    .tut-dot{width:6px;height:6px;border-radius:50%;background:rgba(255,255,255,.15)}
+    .tut-dot.active{background:#3b82f6}
+
+    /* --- Welcome Splash --- */
+    .tut-splash{position:fixed;inset:0;z-index:10010;display:flex;align-items:center;justify-content:center;background:rgba(0,0,0,.72)}
+    .tut-splash.hidden{display:none}
+    .tut-splash-card{background:#111823;border:1px solid rgba(255,255,255,.12);border-radius:16px;padding:32px 36px;max-width:440px;text-align:center;box-shadow:0 12px 48px rgba(0,0,0,.6)}
+    .tut-splash-card h2{font-size:20px;margin:0 0 8px;font-weight:800}
+    .tut-splash-card p{color:#9bb0c5;font-size:13px;line-height:1.6;margin:0 0 24px}
+    .tut-splash-card .tut-begin{padding:10px 28px;font-size:14px;font-weight:700;border-radius:10px;background:#3b82f6;color:#fff;border:none;cursor:pointer}
+    .tut-splash-card .tut-begin:hover{background:#2563eb}
+    .tut-splash-card .tut-skip-link{display:block;margin-top:14px;color:#6b7a8d;font-size:12px;cursor:pointer;border:none;background:none}
+    .tut-splash-card .tut-skip-link:hover{color:#eaeaea}
+
+    /* --- Help button (re-launch) --- */
+    .tut-help-btn{position:fixed;bottom:18px;right:18px;z-index:9998;width:36px;height:36px;border-radius:50%;background:#1e293b;border:1px solid rgba(255,255,255,.12);color:#60a5fa;font-size:16px;font-weight:800;cursor:pointer;display:flex;align-items:center;justify-content:center;box-shadow:0 4px 16px rgba(0,0,0,.3)}
+    .tut-help-btn:hover{background:#263548}
   </style>
 </head>
 <body>
@@ -1072,6 +1107,36 @@ def dashboard_ui():
     </div>
   </div>
 </div>
+
+<!-- ====== Tutorial: Welcome Splash ====== -->
+<div class="tut-splash hidden" id="tutSplash">
+  <div class="tut-splash-card">
+    <h2>Welcome to Bladnir Tech</h2>
+    <p>This guided walkthrough will show you how the Control Tower manages pharmacy prescription workflows with governance gates, proposals, and AI-driven trust automation.</p>
+    <button class="tut-begin" onclick="tutStart()">Click here to begin</button>
+    <button class="tut-skip-link" onclick="tutDismiss()">Skip tutorial</button>
+  </div>
+</div>
+
+<!-- ====== Tutorial: Backdrop + Spotlight + Tooltip ====== -->
+<div class="tut-backdrop hidden" id="tutBackdrop">
+  <div class="tut-backdrop-fill" id="tutBackdropFill"></div>
+  <div class="tut-spotlight" id="tutSpotlight"></div>
+  <div class="tut-tooltip" id="tutTooltip">
+    <div class="tut-step-label" id="tutStepLabel">Step 1 of 10</div>
+    <h3 id="tutTitle">Title</h3>
+    <p id="tutBody">Body</p>
+    <div class="tut-nav">
+      <div class="tut-dots" id="tutDots"></div>
+      <button id="tutBack" onclick="tutPrev()">Back</button>
+      <button id="tutNext" class="tut-primary" onclick="tutNext()">Next</button>
+      <button class="tut-skip" onclick="tutDismiss()">Skip</button>
+    </div>
+  </div>
+</div>
+
+<!-- ====== Tutorial: Help button (re-launch) ====== -->
+<button class="tut-help-btn" id="tutHelpBtn" onclick="tutShowSplash()" title="Restart guided tutorial">?</button>
 
 <script>
 let ALL=[], AUTH={}, AME_SCOPES={}, selected=null, repTimer=null, authOpen=false;
@@ -1331,6 +1396,216 @@ async function resetDashboard(){
     setStatus("Reset complete");
   }catch(e){console.error("reset:",e);setStatus("Reset failed")}
 }
+
+/* ================================================================
+   GUIDED TUTORIAL ENGINE
+   ================================================================ */
+
+const TUT_STEPS = [
+  {
+    title: "Seed Demo Data",
+    body: "First, let's populate the board with prescription cases. Click the <b>Seed All</b> button to create demo scenarios across different queues.",
+    target: ()=>document.querySelector('.controls button:nth-child(3)'),
+    position: "bottom",
+    waitForClick: true,
+    onArrive: null,
+  },
+  {
+    title: "The Pipeline Board",
+    body: "Cases flow left-to-right through pharmacy queues: Contact Manager, Inbound Comms, Data Entry, Pre-Verification, Dispensing, and Verification. Each column shows its <b>AME trust stage</b> and trust score.",
+    target: ()=>document.getElementById('board'),
+    position: "bottom",
+  },
+  {
+    title: "Select a Case",
+    body: "Click any case card in the pipeline to view its details. Try clicking one of the cases in the <b>Inbound Comms</b> column.",
+    target: ()=>document.querySelector('.pipe-card'),
+    position: "bottom",
+    waitForClick: true,
+  },
+  {
+    title: "Case Detail Panel",
+    body: "Here you can see the case name, current queue, insurance status, tasks, and timeline. The <b>Authorization Gates</b> row controls which queue transitions are permitted.",
+    target: ()=>document.getElementById('detailPanel'),
+    position: "top",
+  },
+  {
+    title: "Enable a Governance Gate",
+    body: "Governance gates require explicit human authorization before a case can advance. Check the <b>Prescriber -> Data Entry</b> checkbox to authorize this transition.",
+    target: ()=>document.querySelector('.auth-row'),
+    position: "top",
+    waitForClick: true,
+  },
+  {
+    title: "Open Proposals",
+    body: "Now click <b>Proposals</b> to see suggested automation actions for this case. The system can propose advancing the case to the next queue.",
+    target: ()=>{const btns=document.querySelectorAll('.detail-actions button');return btns[1]||null},
+    position: "bottom",
+    waitForClick: true,
+  },
+  {
+    title: "Create a Proposal",
+    body: "In the Suggested Actions panel, click <b>Create Proposal</b> to have the system formally propose advancing this case. This enters the governance approval flow.",
+    target: ()=>document.querySelector('#authSuggested .js-cp')||document.getElementById('authSuggested'),
+    position: "left",
+    waitForClick: true,
+  },
+  {
+    title: "Approve the Proposal",
+    body: "Now click <b>Approve</b> on the pending proposal in the right panel. In production, this would be a pharmacist or manager making the decision.",
+    target: ()=>document.getElementById('authProposals'),
+    position: "left",
+    waitForClick: true,
+  },
+  {
+    title: "Execute the Proposal",
+    body: "The proposal is now approved. Click <b>Execute</b> to carry out the action. Watch the case move to the next queue in the pipeline!",
+    target: ()=>document.getElementById('authProposals'),
+    position: "left",
+    waitForClick: true,
+  },
+  {
+    title: "Try Auto-Step",
+    body: "Close the proposal modal and click <b>Auto-step</b> to let the AME trust system automatically advance the case. This uses ML predictions and governance gates.",
+    target: ()=>document.querySelector('.detail-actions button'),
+    position: "bottom",
+  },
+  {
+    title: "AME Trust Dashboard",
+    body: "Click the <b>AME Trust Dashboard</b> link in the header to see how trust scores evolve over time as the system learns from human decisions.",
+    target: ()=>document.querySelector('header a'),
+    position: "bottom",
+  },
+  {
+    title: "You're All Set!",
+    body: "You now know the core workflow: <b>Seed -> Select -> Gate -> Propose -> Approve -> Execute</b>. Try different scenarios, toggle gates, and watch AME trust levels change. Click the <b>?</b> button anytime to restart this tour.",
+    target: null,
+    position: "center",
+  },
+];
+
+let tutStep = 0;
+let tutActive = false;
+
+function tutShowSplash(){
+  document.getElementById('tutSplash').classList.remove('hidden');
+}
+function tutHideSplash(){
+  document.getElementById('tutSplash').classList.add('hidden');
+}
+
+function tutStart(){
+  tutHideSplash();
+  tutStep = 0;
+  tutActive = true;
+  document.getElementById('tutBackdrop').classList.remove('hidden');
+  tutRender();
+}
+
+function tutDismiss(){
+  tutActive = false;
+  tutHideSplash();
+  document.getElementById('tutBackdrop').classList.add('hidden');
+  localStorage.setItem('bladnir_tut_done','1');
+}
+
+function tutNext(){
+  if(tutStep < TUT_STEPS.length - 1){ tutStep++; tutRender(); }
+  else { tutDismiss(); }
+}
+function tutPrev(){
+  if(tutStep > 0){ tutStep--; tutRender(); }
+}
+
+function tutRender(){
+  if(!tutActive) return;
+  const step = TUT_STEPS[tutStep];
+  const total = TUT_STEPS.length;
+
+  /* step label */
+  document.getElementById('tutStepLabel').textContent = 'Step ' + (tutStep+1) + ' of ' + total;
+  document.getElementById('tutTitle').textContent = step.title;
+  document.getElementById('tutBody').innerHTML = step.body;
+
+  /* dots */
+  const dotsEl = document.getElementById('tutDots');
+  dotsEl.innerHTML = '';
+  for(let i=0;i<total;i++){
+    const d = document.createElement('div');
+    d.className = 'tut-dot' + (i===tutStep?' active':'');
+    dotsEl.appendChild(d);
+  }
+
+  /* back/next labels */
+  document.getElementById('tutBack').style.display = tutStep===0?'none':'inline-block';
+  const nextBtn = document.getElementById('tutNext');
+  if(tutStep===total-1){ nextBtn.textContent='Finish'; }
+  else if(step.waitForClick){ nextBtn.textContent='Next'; }
+  else{ nextBtn.textContent='Next'; }
+
+  /* target element */
+  const targetEl = step.target ? step.target() : null;
+  const spotlight = document.getElementById('tutSpotlight');
+  const tooltip = document.getElementById('tutTooltip');
+  const backdropFill = document.getElementById('tutBackdropFill');
+
+  if(targetEl){
+    /* position spotlight over target */
+    const rect = targetEl.getBoundingClientRect();
+    const pad = 8;
+    spotlight.style.display = 'block';
+    spotlight.style.top = (rect.top - pad + window.scrollY) + 'px';
+    spotlight.style.left = (rect.left - pad) + 'px';
+    spotlight.style.width = (rect.width + pad*2) + 'px';
+    spotlight.style.height = (rect.height + pad*2) + 'px';
+    backdropFill.style.display = 'none'; /* spotlight provides the backdrop via box-shadow */
+
+    /* position tooltip */
+    const pos = step.position || 'bottom';
+    const tw = 340; /* tooltip max-width */
+
+    if(pos === 'bottom'){
+      tooltip.style.top = (rect.bottom + pad + 12 + window.scrollY) + 'px';
+      tooltip.style.left = Math.max(12, Math.min(rect.left, window.innerWidth - tw - 20)) + 'px';
+    } else if(pos === 'top'){
+      tooltip.style.top = Math.max(12, (rect.top - pad - 12 + window.scrollY - 180)) + 'px';
+      tooltip.style.left = Math.max(12, Math.min(rect.left, window.innerWidth - tw - 20)) + 'px';
+    } else if(pos === 'left'){
+      tooltip.style.top = (rect.top + window.scrollY) + 'px';
+      tooltip.style.left = Math.max(12, rect.left - tw - 20) + 'px';
+    } else if(pos === 'right'){
+      tooltip.style.top = (rect.top + window.scrollY) + 'px';
+      tooltip.style.left = (rect.right + 16) + 'px';
+    }
+
+    /* scroll target into view if needed */
+    targetEl.scrollIntoView({behavior:'smooth', block:'nearest', inline:'nearest'});
+  } else {
+    /* center tooltip (no target) */
+    spotlight.style.display = 'none';
+    backdropFill.style.display = 'block';
+    tooltip.style.top = '50%';
+    tooltip.style.left = '50%';
+    tooltip.style.transform = 'translate(-50%,-50%)';
+    setTimeout(()=>{ tooltip.style.transform=''; }, 0); /* reset after positioning */
+    tooltip.style.top = Math.max(100, window.innerHeight/2 - 100 + window.scrollY) + 'px';
+    tooltip.style.left = Math.max(20, window.innerWidth/2 - 170) + 'px';
+  }
+
+  if(step.onArrive) step.onArrive();
+}
+
+/* Re-render on scroll/resize so spotlight tracks the element */
+window.addEventListener('scroll', ()=>{ if(tutActive) tutRender(); }, {passive:true});
+window.addEventListener('resize', ()=>{ if(tutActive) tutRender(); });
+
+/* Auto-show splash on first visit */
+(function(){
+  if(!localStorage.getItem('bladnir_tut_done')){
+    /* Wait for data to load, then show splash */
+    setTimeout(tutShowSplash, 800);
+  }
+})();
 
 /* ---------- Boot ---------- */
 (async()=>{
