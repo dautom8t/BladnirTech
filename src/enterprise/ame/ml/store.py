@@ -1,0 +1,115 @@
+"""
+AME ML Model Store
+
+Persists trained models to disk with versioning and metadata.
+Models are stored as joblib pickles with companion JSON metadata.
+"""
+from __future__ import annotations
+
+import json
+import logging
+import os
+from datetime import datetime
+from typing import Any, Dict, Optional, Tuple
+
+logger = logging.getLogger(__name__)
+
+try:
+    import joblib
+    HAS_JOBLIB = True
+except ImportError:
+    HAS_JOBLIB = False
+
+DEFAULT_MODEL_DIR = os.path.normpath(
+    os.path.join(os.path.dirname(__file__), "..", "..", "..", "..", "data", "models")
+)
+
+
+class ModelStore:
+    """Persists trained models to disk with versioning."""
+
+    def __init__(self, base_dir: str = DEFAULT_MODEL_DIR):
+        self.base_dir = os.path.abspath(base_dir)
+
+    def _scope_dir(self, scope_key: str) -> str:
+        safe_key = scope_key.replace(":", "/").replace("..", "")
+        return os.path.join(self.base_dir, safe_key)
+
+    def save(self, model: Any, scope_key: str, model_type: str, metadata: Dict[str, Any]) -> int:
+        """Save model to disk. Returns new version number."""
+        if not HAS_JOBLIB:
+            logger.warning("joblib not available, model not persisted")
+            return 0
+
+        directory = self._scope_dir(scope_key)
+        os.makedirs(directory, exist_ok=True)
+
+        version = self._next_version(directory, model_type)
+
+        model_path = os.path.join(directory, f"{model_type}_v{version}.pkl")
+        joblib.dump(model, model_path)
+
+        metadata.update({
+            "version": version,
+            "saved_at": datetime.utcnow().isoformat() + "Z",
+            "model_path": model_path,
+        })
+
+        meta_path = os.path.join(directory, f"{model_type}_metadata.json")
+        with open(meta_path, "w") as f:
+            json.dump(metadata, f, indent=2, default=str)
+
+        logger.info(f"Saved {model_type} v{version} to {model_path}")
+        return version
+
+    def load(self, scope_key: str, model_type: str) -> Tuple[Any, Dict[str, Any]]:
+        """Load latest model. Returns (model, metadata) or (None, {})."""
+        if not HAS_JOBLIB:
+            return None, {}
+
+        directory = self._scope_dir(scope_key)
+        meta_path = os.path.join(directory, f"{model_type}_metadata.json")
+
+        if not os.path.exists(meta_path):
+            return None, {}
+
+        try:
+            with open(meta_path) as f:
+                metadata = json.load(f)
+
+            version = metadata.get("version", 1)
+            model_path = os.path.join(directory, f"{model_type}_v{version}.pkl")
+
+            if not os.path.exists(model_path):
+                return None, metadata
+
+            model = joblib.load(model_path)
+            logger.info(f"Loaded {model_type} v{version} from {model_path}")
+            return model, metadata
+        except Exception as e:
+            logger.error(f"Failed to load {model_type}: {e}")
+            return None, {}
+
+    def get_metadata(self, scope_key: str, model_type: str) -> Dict[str, Any]:
+        """Get metadata without loading model."""
+        directory = self._scope_dir(scope_key)
+        meta_path = os.path.join(directory, f"{model_type}_metadata.json")
+
+        if not os.path.exists(meta_path):
+            return {}
+
+        try:
+            with open(meta_path) as f:
+                return json.load(f)
+        except Exception:
+            return {}
+
+    def _next_version(self, directory: str, model_type: str) -> int:
+        meta_path = os.path.join(directory, f"{model_type}_metadata.json")
+        if os.path.exists(meta_path):
+            try:
+                with open(meta_path) as f:
+                    return json.load(f).get("version", 0) + 1
+            except Exception:
+                pass
+        return 1
