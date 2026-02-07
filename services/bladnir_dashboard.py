@@ -533,6 +533,41 @@ def _demo_repeat_tasks(row: dict, copies: int = 1):
             "state": template.get("state", "open"),
         })
 
+@router.post("/dashboard/api/reset")
+def reset_dashboard(db=Depends(get_db)):
+    """
+    Full reset: clears demo cases, proposals, AME trust data, and governance gates.
+    Returns the dashboard to a clean-slate state for a fresh demo.
+    """
+    global DEMO_ROWS, DEMO_BY_ID, DEMO_PROPOSALS, DEMO_PROPOSAL_BY_ID
+
+    # 1. Clear in-memory demo data
+    DEMO_ROWS = []
+    DEMO_BY_ID = {}
+    DEMO_PROPOSALS = []
+    DEMO_PROPOSAL_BY_ID = {}
+
+    # 2. Clear AME trust tables
+    from src.enterprise.ame.models import AMETrustScope, AMEEvent, AMEExecution
+    try:
+        db.query(AMEExecution).delete()
+        db.query(AMEEvent).delete()
+        db.query(AMETrustScope).delete()
+        db.commit()
+        log.info("AME trust data cleared")
+    except Exception as exc:
+        db.rollback()
+        log.warning("AME reset failed: %s", exc)
+
+    # 3. Reset governance gates
+    try:
+        governance.reset_all_gates(actor="dashboard_reset", note="Dashboard full reset")
+        log.info("Governance gates reset")
+    except Exception as exc:
+        log.warning("Governance reset failed: %s", exc)
+
+    return {"ok": True, "message": "Dashboard reset to clean slate"}
+
 @router.post("/dashboard/api/seed")
 def seed_demo_cases(
     scenario_id: str = Body("happy_path", embed=True),
@@ -905,6 +940,7 @@ def dashboard_ui():
   <input id="search" placeholder="Search cases&hellip;" oninput="renderBoard()" style="flex:1;min-width:100px;max-width:260px"/>
   <div style="flex:1"></div>
   <button onclick="refreshAll()">Refresh</button>
+  <button onclick="resetDashboard()" style="color:#f87171;border-color:rgba(248,113,113,.3)">Reset</button>
 </div>
 
 <!-- ====== Pipeline board (full-width, horizontal) ====== -->
@@ -1214,6 +1250,19 @@ async function decideProposal(pid,decision){
 async function executeProposal(pid){
   try{await api("/dashboard/api/automation/"+pid+"/execute",{method:"POST",body:JSON.stringify({executed_by:"system"})})}catch(e){alert(e.message)}
   await refreshAll();await refreshAuthModal();
+}
+
+/* ---------- Reset ---------- */
+async function resetDashboard(){
+  if(!confirm("Reset everything? This clears all cases, proposals, AME trust data, and governance gates."))return;
+  setStatus("Resetting\u2026");
+  try{
+    await api("/dashboard/api/reset",{method:"POST",body:"{}"});
+    selected=null;
+    document.getElementById("detailPanel").classList.remove("open");
+    await refreshAll();
+    setStatus("Reset complete");
+  }catch(e){console.error("reset:",e);setStatus("Reset failed")}
 }
 
 /* ---------- Boot ---------- */
