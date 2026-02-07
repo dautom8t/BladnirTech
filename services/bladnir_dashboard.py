@@ -1150,13 +1150,18 @@ function toggleRepetition(){
 /* ---------- Refresh ---------- */
 async function refreshAll(){
   setStatus("Loading\u2026");
-  const [d1,d2]=await Promise.all([api("/dashboard/api/workflows"),api("/dashboard/api/automation")]);
-  ALL=d1.workflows||[];AUTH=d2.authorizations||{};
-  await fetchAmeScopes();
-  renderBoard();
-  if(selected){const wf=ALL.find(x=>x.id===selected.id);if(wf)renderDetails(wf)}
-  if(authOpen)refreshAuthModal().catch(()=>{});
-  setStatus("Ready");
+  try{
+    const [d1,d2]=await Promise.all([
+      api("/dashboard/api/workflows").catch(e=>{console.error("workflows:",e);return{workflows:[]}}),
+      api("/dashboard/api/automation").catch(e=>{console.error("automation:",e);return{authorizations:{}}})
+    ]);
+    ALL=d1.workflows||[];AUTH=d2.authorizations||{};
+    await fetchAmeScopes();
+    renderBoard();
+    if(selected){const wf=ALL.find(x=>x.id===selected.id);if(wf)renderDetails(wf)}
+    if(authOpen)refreshAuthModal().catch(()=>{});
+    setStatus("Ready");
+  }catch(e){console.error("refreshAll:",e);setStatus("Error — check console")}
 }
 
 /* ---------- Proposal modal ---------- */
@@ -1190,8 +1195,8 @@ async function refreshAuthModal(){
       const a=p.action||{},st=p.status||"unknown";
       const aud=(p.audit||[]).slice().reverse().slice(0,4).map(x=>'<div class="muted">\u2022 '+x.ts+': '+x.event+'</div>').join("");
       let btns="";
-      if(st==="pending")btns='<button onclick="decideProposal(\''+p.id+'\',\'approve\')">Approve</button> <button onclick="decideProposal(\''+p.id+'\',\'reject\')">Reject</button>';
-      else if(st==="approved")btns='<button class="primary" onclick="executeProposal(\''+p.id+'\')">Execute</button>';
+      if(st==="pending")btns='<button onclick="decideProposal(\\''+p.id+'\\',\\'approve\\')">Approve</button> <button onclick="decideProposal(\\''+p.id+'\\',\\'reject\\')">Reject</button>';
+      else if(st==="approved")btns='<button class="primary" onclick="executeProposal(\\''+p.id+'\\')">Execute</button>';
       else btns='<span class="pill">'+st+'</span>';
       return '<div class="item"><b>'+p.id+'</b> <span class="pill" style="margin-left:6px">'+st+'</span><div class="muted" style="margin-top:4px">'+(a.label||a.type||"action")+'</div><div style="height:6px"></div><div style="display:flex;gap:6px">'+btns+'</div><div style="height:6px"></div>'+aud+'</div>';
     }).join("");
@@ -1212,7 +1217,10 @@ async function executeProposal(pid){
 }
 
 /* ---------- Boot ---------- */
-(async()=>{await loadScenarios();await refreshAll()})();
+(async()=>{
+  try{await loadScenarios()}catch(e){console.error("loadScenarios:",e)}
+  try{await refreshAll()}catch(e){console.error("refreshAll:",e);setStatus("Error — check console")}
+})();
 </script>
 </body>
 </html>
