@@ -984,35 +984,60 @@ def seed_demo_cases(
         scenario_label = s.get("label", sid)
 
         # Build scenario-specific events that tell the story
+        industry = s.get("industry", "pharmacy")
         events = [
             {"event_type": "case_seeded", "payload": {"scenario_id": sid, "label": scenario_label, "description": s.get("description", "")}},
             {"event_type": "queue_changed", "payload": {"from": "none", "to": start_queue}},
-            {"event_type": "insurance_adjudicated", "payload": {"payer": "AutoPayer", "result": s.get("insurance_result", "accepted")}},
         ]
 
-        # Add scenario-specific context events
-        if s.get("reject_reason"):
-            events.append({"event_type": "insurance_rejection_detail", "payload": {"reason": s["reject_reason"]}})
-        if s.get("pa"):
-            events.append({"event_type": "prior_auth_initiated", "payload": {"eta_days": s["pa"]["eta_days"], "status": "pending"}})
-        if s.get("prescriber_request"):
-            events.append({"event_type": "prescriber_request_sent", "payload": s["prescriber_request"]})
-        if s.get("discount_card"):
-            events.append({"event_type": "discount_card_applied", "payload": s["discount_card"]})
-        if s.get("patient_message"):
-            events.append({"event_type": "patient_notification_queued", "payload": s["patient_message"]})
+        if industry == "insurance":
+            events.append({"event_type": "claim_received", "payload": {"claim_type": "auto_adjudication", "status": "pending_review"}})
+            events.append({"event_type": "policy_validated", "payload": {"policy_status": "active", "coverage": "verified"}})
+        elif industry == "hr":
+            events.append({"event_type": "hire_request_received", "payload": {"department": "Operations", "role": "Analyst", "start_date": "2026-02-15"}})
+            events.append({"event_type": "documents_requested", "payload": {"items": ["ID verification", "Tax forms", "Direct deposit"]}})
+        else:
+            events.append({"event_type": "insurance_adjudicated", "payload": {"payer": "AutoPayer", "result": s.get("insurance_result", "accepted")}})
 
-        # Build scenario-specific tasks
-        tasks = [{"name": "Enter NPI + patient DOB", "assigned_to": "—", "state": "open"}]
-        if not s.get("refills_ok"):
-            tasks.append({"name": "Request refill authorization from prescriber", "assigned_to": "Store Tech", "state": "pending"})
-        if s.get("insurance_result") == "pa_required":
-            tasks.append({"name": "Monitor prior authorization status", "assigned_to": "System", "state": "pending"})
-        if s.get("insurance_result") == "rejected":
-            tasks.append({"name": "Contact patient re: insurance update", "assigned_to": "Store Tech", "state": "pending"})
+        # Add pharmacy-specific context events
+        if industry == "pharmacy":
+            if s.get("reject_reason"):
+                events.append({"event_type": "insurance_rejection_detail", "payload": {"reason": s["reject_reason"]}})
+            if s.get("pa"):
+                events.append({"event_type": "prior_auth_initiated", "payload": {"eta_days": s["pa"]["eta_days"], "status": "pending"}})
+            if s.get("prescriber_request"):
+                events.append({"event_type": "prescriber_request_sent", "payload": s["prescriber_request"]})
+            if s.get("discount_card"):
+                events.append({"event_type": "discount_card_applied", "payload": s["discount_card"]})
+            if s.get("patient_message"):
+                events.append({"event_type": "patient_notification_queued", "payload": s["patient_message"]})
+
+        # Build industry-specific tasks
+        industry = s.get("industry", "pharmacy")
+        if industry == "insurance":
+            tasks = [
+                {"name": "Intake claim submission", "assigned_to": "Claims Processor", "state": "open"},
+                {"name": "Validate policy and coverage", "assigned_to": "System", "state": "pending"},
+                {"name": "Assess liability and damages", "assigned_to": "Adjuster", "state": "pending"},
+                {"name": "Review and approve payout", "assigned_to": "Claims Manager", "state": "pending"},
+            ]
+        elif industry == "hr":
+            tasks = [
+                {"name": "Collect new-hire documents", "assigned_to": "HR Coordinator", "state": "open"},
+                {"name": "Run background check", "assigned_to": "System", "state": "pending"},
+                {"name": "Provision system access and equipment", "assigned_to": "IT Ops", "state": "pending"},
+                {"name": "Schedule compliance training", "assigned_to": "HR Manager", "state": "pending"},
+            ]
+        else:
+            tasks = [{"name": "Enter NPI + patient DOB", "assigned_to": "—", "state": "open"}]
+            if not s.get("refills_ok"):
+                tasks.append({"name": "Request refill authorization from prescriber", "assigned_to": "Store Tech", "state": "pending"})
+            if s.get("insurance_result") == "pa_required":
+                tasks.append({"name": "Monitor prior authorization status", "assigned_to": "System", "state": "pending"})
+            if s.get("insurance_result") == "rejected":
+                tasks.append({"name": "Contact patient re: insurance update", "assigned_to": "Store Tech", "state": "pending"})
 
         # Industry-specific case names
-        industry = s.get("industry", "pharmacy")
         if industry == "insurance":
             case_name = f"Claims \u2022 CLM-{2000 + idx} (Demo)"
         elif industry == "hr":
@@ -1020,12 +1045,21 @@ def seed_demo_cases(
         else:
             case_name = f"Pharmacy \u2022 RX-{1000 + idx} (Demo)"
 
+        # Industry-specific detail label (shown under case card)
+        if industry == "insurance":
+            detail_label = f"Claim: {s.get('insurance_result', 'accepted')}"
+        elif industry == "hr":
+            detail_label = "New hire onboarding"
+        else:
+            detail_label = f"AutoPayer: {s.get('insurance_result', 'accepted')}"
+
         raw = {
             "id": demo_id,
             "name": case_name,
             "state": "ACTIVE",
             "scenario_id": sid,
             "scenario_label": scenario_label,
+            "industry": industry,
             "tasks": tasks,
             "events": events,
         }
@@ -1037,7 +1071,8 @@ def seed_demo_cases(
             "queue": start_queue,
             "scenario_id": sid,
             "scenario_label": scenario_label,
-            "insurance": f"AutoPayer: {s.get('insurance_result','accepted')}" if industry == "pharmacy" else ("\u2014" if industry != "insurance" else f"Claim: {s.get('insurance_result','accepted')}"),
+            "industry": industry,
+            "insurance": detail_label,
             "tasks": len(raw["tasks"]),
             "events": len(raw["events"]),
             "is_kroger": industry == "pharmacy",
@@ -1955,7 +1990,7 @@ function showToast(msg,type){
 
 async function api(path, opts={}){
   const ctrl=new AbortController();
-  const timer=setTimeout(()=>ctrl.abort(),15000);
+  const timer=setTimeout(()=>ctrl.abort(),30000);
   try{
     const res=await fetch(path,{signal:ctrl.signal,headers:{"Content-Type":"application/json",...(opts.headers||{})},...opts});
     clearTimeout(timer);
@@ -2028,14 +2063,36 @@ function groupByQueue(rows){
 }
 function matchesSearch(r,s){if(!s)return true;s=s.toLowerCase();return(r.name||"").toLowerCase().includes(s)||(r.queue||"").toLowerCase().includes(s)}
 
-const QUEUE_ORDER=[
-  ["contact_manager","Intake"],
-  ["inbound_comms","Triage"],
-  ["data_entry","Data Entry"],
-  ["pre_verification","Verification"],
-  ["dispensing","Processing"],
-  ["verification","Complete"],
-];
+/* Industry-specific column labels for the pipeline */
+const INDUSTRY_LABELS={
+  pharmacy:{contact_manager:"Intake",inbound_comms:"Triage",data_entry:"Data Entry",pre_verification:"Verification",dispensing:"Processing",verification:"Complete"},
+  insurance:{contact_manager:"Intake",inbound_comms:"Triage",data_entry:"Assessment",pre_verification:"Review",dispensing:"Approval",verification:"Settled"},
+  hr:{contact_manager:"Request",inbound_comms:"Documents",data_entry:"Background Check",pre_verification:"Provisioning",dispensing:"Training",verification:"Complete"},
+};
+
+/* Detect dominant industry from current data for column labels */
+function detectIndustry(){
+  const counts={pharmacy:0,insurance:0,hr:0};
+  ALL.forEach(r=>{const ind=r.industry||"pharmacy";if(counts[ind]!==undefined)counts[ind]++});
+  if(counts.insurance>counts.pharmacy&&counts.insurance>=counts.hr)return "insurance";
+  if(counts.hr>counts.pharmacy&&counts.hr>=counts.insurance)return "hr";
+  return "pharmacy";
+}
+
+function getQueueOrder(){
+  const keys=["contact_manager","inbound_comms","data_entry","pre_verification","dispensing","verification"];
+  /* If mixed industries, show generic labels */
+  const industries=new Set(ALL.map(r=>r.industry||"pharmacy"));
+  let labels;
+  if(industries.size<=1){
+    const ind=industries.values().next().value||"pharmacy";
+    labels=INDUSTRY_LABELS[ind]||INDUSTRY_LABELS.pharmacy;
+  }else{
+    /* Mixed: show combined labels */
+    labels={contact_manager:"Intake / Request",inbound_comms:"Triage / Documents",data_entry:"Data Entry / Assessment",pre_verification:"Verification / Review",dispensing:"Processing / Approval",verification:"Complete"};
+  }
+  return keys.map(k=>[k,labels[k]||k]);
+}
 
 function renderBoard(){
   const s=document.getElementById("search").value.trim();
@@ -2044,7 +2101,7 @@ function renderBoard(){
   const board=document.getElementById("board");
   board.innerHTML="";
 
-  QUEUE_ORDER.forEach(([key,title],i)=>{
+  getQueueOrder().forEach(([key,title],i)=>{
     /* arrow connector */
     if(i>0){
       const ar=document.createElement("div");ar.className="pipe-arrow";
@@ -2090,8 +2147,9 @@ function renderDetails(wf){
   selected=wf;
   document.getElementById("detailPanel").classList.add("open");
   document.getElementById("caseMeta").textContent="#"+wf.id+" \u2022 "+wf.name;
-  document.getElementById("pillQueue").textContent="step: "+wf.queue;
-  document.getElementById("pillIns").textContent="insurance: "+wf.insurance;
+  const qLabels=INDUSTRY_LABELS[wf.industry||"pharmacy"]||INDUSTRY_LABELS.pharmacy;
+  document.getElementById("pillQueue").textContent="step: "+(qLabels[wf.queue]||wf.queue);
+  document.getElementById("pillIns").textContent=(wf.industry==="hr"?"dept":"insurance")+": "+wf.insurance;
   document.getElementById("pillState").textContent="status: "+wf.state;
 
   const ame=AME_SCOPES[wf.queue]||{};
@@ -2137,7 +2195,8 @@ async function autoStep(){
   }catch(e){
     const m=String(e?.message||"");
     if(m.toLowerCase().includes("not authorized")||m.includes("403")){setStatus("Enable the safety checkpoint first");showToast("Safety checkpoint not enabled for this step","info");return}
-    setStatus("Error");alert("Step failed: "+m);
+    if(m.includes("timed out")){setStatus("Server busy \u2014 try again");showToast("Server was busy. Click Auto-step again.","info");return}
+    setStatus("Error");showToast("Step failed: "+m,"info");
   }
 }
 
