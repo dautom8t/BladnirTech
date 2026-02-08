@@ -65,6 +65,20 @@ def _short_stage(stage: str) -> str:
     return {"observe": "Learning", "propose": "Suggesting", "guarded_auto": "Assisting",
             "conditional_auto": "Semi-Auto", "full_auto": "Autonomous"}.get(stage, stage or "—")
 
+# Industry-specific queue label mapping (Python side, for narration)
+_QUEUE_LABELS: dict[str, dict[str, str]] = {
+    "pharmacy": {"contact_manager": "Intake", "inbound_comms": "Triage", "data_entry": "Data Entry",
+                 "pre_verification": "Verification", "dispensing": "Processing", "verification": "Complete"},
+    "insurance": {"contact_manager": "Intake", "inbound_comms": "Triage", "data_entry": "Assessment",
+                  "pre_verification": "Review", "dispensing": "Approval", "verification": "Settled"},
+    "hr": {"contact_manager": "Request", "inbound_comms": "Documents", "data_entry": "Background Check",
+           "pre_verification": "Provisioning", "dispensing": "Training", "verification": "Complete"},
+}
+
+def _q_label(queue: str, industry: str = "pharmacy") -> str:
+    """Translate a raw queue key to an industry-specific display label."""
+    return _QUEUE_LABELS.get(industry, _QUEUE_LABELS["pharmacy"]).get(queue, queue)
+
 # Single source of truth: transitions + the gate key required
 TRANSITIONS = {
     "contact_manager":  {"to": "inbound_comms",     "gate": "kroger.prescriber_approval_to_data_entry"},
@@ -710,7 +724,7 @@ def execute_proposal(
     else:
         gov_note = "Your team approved this step before it was executed."
     _narrate(
-        f"Case advanced: {case_name} moved to {to_q} (+30s saved vs. manual)",
+        f"Case advanced: {case_name} moved to {_q_label(to_q)} (+30s saved vs. manual)",
         "execution",
         f"{gov_note} Each successful step builds the AI's track record toward more autonomy.",
         meta={"ame_stage": mode, "trust": ame.get("trust", 0)},
@@ -1298,6 +1312,7 @@ def dashboard_auto_step(
 
         # Narrate auto-step
         case_name = row.get("name", f"Case #{workflow_id}")
+        _ind = row.get("industry", "pharmacy")
         trust_pct = round(ame.get("trust", 0) * 100)
         if mode in ("guarded_auto", "conditional_auto", "full_auto"):
             gov_msg = f"AI handled this automatically ({_short_stage(mode)}, {trust_pct}% confidence)."
@@ -1306,7 +1321,7 @@ def dashboard_auto_step(
         else:
             gov_msg = f"Automation level: {_short_stage(mode)} — your team's approval was required for this step."
         _narrate(
-            f"Case advanced: {case_name} moved to {nxt} (+30s saved)",
+            f"Case advanced: {case_name} moved to {_q_label(nxt, _ind)} (+30s saved)",
             "execution",
             f"{gov_msg} Each successful step earns the AI more trust toward higher automation.",
             meta={"ame_stage": mode, "trust": ame.get("trust", 0)},
@@ -1403,12 +1418,13 @@ def run_demo_step(
 
     to_q = t["to"]
     gk = t["gate"]
+    _ind = row.get("industry", "pharmacy")
 
     # Step 1: Auto-authorize the safety checkpoint
     if not governance.is_authorized(gk):
         governance.authorize_gate(gk, actor="demo_autoplay", note="Auto-play demo")
         _narrate(
-            f"Safety checkpoint enabled: {cur} \u2192 {to_q}",
+            f"Safety checkpoint enabled: {_q_label(cur, _ind)} \u2192 {_q_label(to_q, _ind)}",
             "gate",
             "In production, a manager would enable this pathway. The demo does it automatically so you can see the full flow.",
         )
@@ -1449,7 +1465,7 @@ def run_demo_step(
               decision_reason="Demo auto-play approval")
 
     _narrate(
-        f"Manager approved: move case to {to_q}",
+        f"Manager approved: move case to {_q_label(to_q, _ind)}",
         "decision",
         "Each approval teaches the AI what's safe. After enough approvals, similar cases can be auto-approved.",
     )
@@ -1476,7 +1492,7 @@ def run_demo_step(
     trust_pct = round(ame.get("trust", 0) * 100)
 
     _narrate(
-        f"Done! Case moved to {to_q} — saved 45 seconds vs. manual processing",
+        f"Done! Case moved to {_q_label(to_q, _ind)} — saved 45 seconds vs. manual processing",
         "execution",
         f"AI confidence at this step: {trust_pct}%. "
         f"Each successful case builds the AI's track record toward handling these steps automatically.",
@@ -1882,11 +1898,9 @@ def dashboard_ui():
     </div>
   </div>
 
-  <div class="auth-row">
+  <div class="auth-row" id="authRow">
     <span style="font-size:11px;font-weight:700;color:var(--muted)">Safety Checkpoints:</span>
-    <label title="Enable or disable the pathway between these steps. Unchecked = cases cannot advance."><input type="checkbox" id="a1" onchange="saveAuth('kroger.prescriber_approval_to_data_entry',this.checked)"> Intake &rarr; Data Entry</label>
-    <label title="Enable or disable the pathway between these steps. Unchecked = cases cannot advance."><input type="checkbox" id="a2" onchange="saveAuth('kroger.data_entry_to_preverify_insurance',this.checked)"> Data Entry &rarr; Verification</label>
-    <label title="Enable or disable the pathway between these steps. Unchecked = cases cannot advance."><input type="checkbox" id="a3" onchange="saveAuth('kroger.preverify_to_access_granted',this.checked)"> Verification &rarr; Dispensing</label>
+    <!-- Populated dynamically by renderDetails() based on industry -->
   </div>
 
   <div class="detail-grid">
@@ -2071,6 +2085,9 @@ const INDUSTRY_LABELS={
 };
 
 /* Detect dominant industry from current data for column labels */
+/* Translate raw queue key to industry label */
+function qLabel(q,ind){return(INDUSTRY_LABELS[ind||"pharmacy"]||INDUSTRY_LABELS.pharmacy)[q]||q}
+
 function detectIndustry(){
   const counts={pharmacy:0,insurance:0,hr:0};
   ALL.forEach(r=>{const ind=r.industry||"pharmacy";if(counts[ind]!==undefined)counts[ind]++});
@@ -2167,10 +2184,25 @@ function renderDetails(wf){
   (wf.raw.events||[]).slice().reverse().forEach(e=>{const d=document.createElement("div");d.className="item";d.innerHTML="<b>"+e.event_type+"</b><div class='muted'>"+JSON.stringify(e.payload||{})+"</div>";eEl.appendChild(d)});
   if(!(wf.raw.events||[]).length) eEl.innerHTML='<div class="muted">No events</div>';
 
-  /* auth checkboxes */
-  document.getElementById("a1").checked=!!AUTH["kroger.prescriber_approval_to_data_entry"];
-  document.getElementById("a2").checked=!!AUTH["kroger.data_entry_to_preverify_insurance"];
-  document.getElementById("a3").checked=!!AUTH["kroger.preverify_to_access_granted"];
+  /* auth checkboxes — dynamic per industry */
+  const authRow=document.getElementById("authRow");
+  const ind=wf.industry||"pharmacy";
+  const lbl=INDUSTRY_LABELS[ind]||INDUSTRY_LABELS.pharmacy;
+  const gates=[
+    {key:"kroger.prescriber_approval_to_data_entry",from:"contact_manager",to:"data_entry"},
+    {key:"kroger.data_entry_to_preverify_insurance",from:"data_entry",to:"pre_verification"},
+    {key:"kroger.preverify_to_access_granted",from:"pre_verification",to:"dispensing"},
+  ];
+  authRow.innerHTML='<span style="font-size:11px;font-weight:700;color:var(--muted)">Safety Checkpoints:</span>';
+  gates.forEach((g,i)=>{
+    const fromLabel=lbl[g.from]||g.from;
+    const toLabel=lbl[g.to]||g.to;
+    const checked=!!AUTH[g.key];
+    const label=document.createElement("label");
+    label.title="Enable or disable the pathway between these steps. Unchecked = cases cannot advance.";
+    label.innerHTML='<input type="checkbox" id="a'+(i+1)+'" '+(checked?"checked":"")+' onchange="saveAuth(\''+g.key+'\',this.checked)"> '+fromLabel+' &rarr; '+toLabel;
+    authRow.appendChild(label);
+  });
 
   renderBoard(); /* refresh active highlight */
 }
@@ -2191,7 +2223,7 @@ async function autoStep(){
   try{
     const r=await api("/dashboard/api/auto-step",{method:"POST",body:JSON.stringify({workflow_id:selected.id})});
     await refreshAll();setStatus("Ready");
-    if(r.from&&r.to)showToast("Case moved: "+r.from+" \u2192 "+r.to,"success");
+    if(r.from&&r.to){const si=selected?.industry||"pharmacy";showToast("Case moved: "+qLabel(r.from,si)+" \u2192 "+qLabel(r.to,si),"success")}
   }catch(e){
     const m=String(e?.message||"");
     if(m.toLowerCase().includes("not authorized")||m.includes("403")){setStatus("Enable the safety checkpoint first");showToast("Safety checkpoint not enabled for this step","info");return}
@@ -2251,7 +2283,7 @@ async function runFullDemo(){
       await refreshAll();
       const upd=ALL.find(x=>x.id===caseId);
       if(upd)renderDetails(upd);
-      if(r.from&&r.to)showToast("Step "+stepNum+": "+r.from+" \u2192 "+r.to+" (+45s saved)","success");
+      if(r.from&&r.to){const di=(r.case&&r.case.industry)||"pharmacy";showToast("Step "+stepNum+": "+qLabel(r.from,di)+" \u2192 "+qLabel(r.to,di)+" (+45s saved)","success")}
       if(r.done){showToast("Demo complete! Case processed through entire pipeline.","success");break}
       await sleep(2200);
     }
