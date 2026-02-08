@@ -345,6 +345,95 @@ def get_activity_feed(limit: int = 50):
     return {"items": items, "count": len(items)}
 
 
+@router.get("/dashboard/api/report")
+def generate_report(db=Depends(get_db)):
+    """
+    Generate a detailed report of all demo activity:
+    cases, proposals, decisions, executions, and AI trust status.
+    """
+    from src.enterprise.ame.models import AMETrustScope
+
+    # Gather all cases
+    cases = []
+    for row in DEMO_ROWS:
+        industry = row.get("industry", "pharmacy")
+        q_lbl = _q_label(row.get("queue", ""), industry)
+        cases.append({
+            "id": row["id"],
+            "name": row.get("name", ""),
+            "industry": industry,
+            "queue": q_lbl,
+            "queue_raw": row.get("queue", ""),
+            "state": row.get("state", ""),
+            "scenario_label": row.get("scenario_label", ""),
+            "tasks": row.get("raw", {}).get("tasks", []),
+            "events": row.get("raw", {}).get("events", []),
+        })
+
+    # Gather all proposals with full audit trails
+    proposals = []
+    for p in DEMO_PROPOSALS:
+        case_row = DEMO_BY_ID.get(p.get("case_id"))
+        case_name = case_row.get("name", f"Case #{p.get('case_id')}") if case_row else f"Case #{p.get('case_id')}"
+        proposals.append({
+            "id": p["id"],
+            "case_id": p.get("case_id"),
+            "case_name": case_name,
+            "action": p.get("action", {}),
+            "status": p.get("status", "unknown"),
+            "proposed_by": p.get("proposed_by", "—"),
+            "proposed_at": p.get("proposed_at", ""),
+            "approved_by": p.get("approved_by"),
+            "approved_at": p.get("approved_at"),
+            "executed_by": p.get("executed_by"),
+            "executed_at": p.get("executed_at"),
+            "audit": p.get("audit", []),
+        })
+
+    # Gather AME trust scopes
+    trust_scopes = []
+    try:
+        scopes = db.query(AMETrustScope).all()
+        for s in scopes:
+            trust_scopes.append({
+                "queue": _q_label(s.queue or "", "pharmacy"),
+                "queue_raw": s.queue or "",
+                "stage": _short_stage(s.stage or "observe"),
+                "trust_score": round((s.trust_score or 0) * 100),
+                "proposals": s.proposal_count or 0,
+                "executions": s.execution_count or 0,
+                "override_rate": round((s.override_rate or 0) * 100),
+            })
+    except Exception:
+        pass
+
+    # Activity log (full)
+    activity = list(reversed(ACTIVITY_FEED[:]))
+
+    # Summary stats
+    total_proposals = len(proposals)
+    approved = sum(1 for p in proposals if p["status"] in ("approved", "executed"))
+    rejected = sum(1 for p in proposals if p["status"] == "rejected")
+    executed = sum(1 for p in proposals if p["status"] == "executed")
+    pending = sum(1 for p in proposals if p["status"] == "pending")
+
+    return {
+        "generated_at": _now_iso(),
+        "summary": {
+            "total_cases": len(cases),
+            "total_proposals": total_proposals,
+            "approved": approved,
+            "rejected": rejected,
+            "executed": executed,
+            "pending": pending,
+        },
+        "cases": cases,
+        "proposals": proposals,
+        "trust_scopes": trust_scopes,
+        "activity_log": activity,
+    }
+
+
 @router.get("/dashboard/api/cases/{case_id}")
 def get_case_detail(case_id: int, db=Depends(get_db)):
     log.info(f"case_detail: case_id={case_id}")
@@ -1807,6 +1896,7 @@ def dashboard_ui():
   <input id="search" placeholder="Search cases&hellip;" oninput="renderBoard()" style="flex:1;min-width:100px;max-width:260px"/>
   <div style="flex:1"></div>
   <button id="runDemoBtn" onclick="runFullDemo()" style="background:rgba(34,197,94,.15);border-color:rgba(34,197,94,.3);color:#4ade80;font-weight:700" title="Auto-play: watch one case flow through the entire pipeline with narration (resets data)">&#9654; Auto-Play Demo</button>
+  <button onclick="generateReport()" style="background:rgba(59,130,246,.12);border-color:rgba(59,130,246,.3);color:#60a5fa" title="Generate a detailed report of all decisions, proposals, and executions">&#128196; Report</button>
   <button onclick="refreshAll()">Refresh</button>
   <button onclick="resetDashboard()" style="color:#f87171;border-color:rgba(248,113,113,.3)">Reset</button>
 </div>
@@ -2526,17 +2616,197 @@ async function executeProposal(pid){
 
 /* ---------- Reset ---------- */
 async function resetDashboard(){
-  if(!confirm("Reset everything? This clears all cases, proposals, and AI training data."))return;
+  if(!confirm("Reset everything? This returns the dashboard to a fresh, first-visit state."))return;
   setStatus("Resetting\u2026");
   try{
     await api("/dashboard/api/reset",{method:"POST",body:"{}"});
   }catch(e){
     console.warn("reset API slow/failed, refreshing anyway:",e);
   }
+
+  /* Clear all UI state back to first-visit */
   selected=null;
+  demoRunning=false;
+  if(repTimer){clearInterval(repTimer);repTimer=null}
+
+  /* Close panels and modals */
   document.getElementById("detailPanel").classList.remove("open");
+  document.getElementById("authModal").style.display="none";
+  authOpen=false;
+
+  /* Close activity feed */
+  feedOpen=false;
+  document.getElementById('feedStrip').classList.remove('open');
+  document.getElementById('feedArrow').classList.remove('open');
+
+  /* Reset ML display */
+  ["mlDecVal","mlOutVal","mlAnoVal"].forEach(id=>{document.getElementById(id).textContent="Waiting for data"});
+  ["dotDecision","dotOutcome","dotAnomaly"].forEach(id=>{const el=document.getElementById(id);el.className="ml-dot off"});
+  ["roiEvents","roiAuto","roiHuman"].forEach(id=>{document.getElementById(id).textContent="0"});
+  document.getElementById("roiTime").textContent="0m";
+  document.getElementById("roiProjection").textContent="";
+  document.getElementById("mlEventCount").textContent="";
+  document.getElementById("trainStatus").textContent="";
+  ML_STATS={};AME_SCOPES={};
+
+  /* Reset run-demo button */
+  const btn=document.getElementById("runDemoBtn");
+  btn.textContent="\u25b6 Auto-Play Demo";btn.disabled=false;
+  const repBtn=document.getElementById("repBtn");
+  if(repBtn)repBtn.textContent="Repeat: OFF";
+
+  /* Reset search */
+  document.getElementById("search").value="";
+
+  /* Refresh data (backend re-seeded fresh cases) */
   await refreshAll();
+
+  /* Show welcome splash as if first visit */
+  localStorage.removeItem('bladnir_tut_done');
+  setTimeout(tutShowSplash, 400);
   setStatus("Ready");
+}
+
+/* ================================================================
+   REPORT GENERATOR
+   ================================================================ */
+async function generateReport(){
+  setStatus("Generating report\u2026");
+  let data;
+  try{
+    data=await api("/dashboard/api/report");
+  }catch(e){
+    showToast("Failed to generate report: "+e.message,"info");
+    setStatus("Ready");
+    return;
+  }
+  setStatus("Ready");
+
+  const s=data.summary||{};
+  const ts=new Date(data.generated_at||Date.now()).toLocaleString();
+
+  let html=`<!DOCTYPE html><html><head><meta charset="utf-8"/><title>PactGate\u2122 Report \u2014 ${ts}</title>
+<style>
+  *{box-sizing:border-box;margin:0;padding:0}
+  body{font-family:'Inter',system-ui,Arial,sans-serif;background:#fff;color:#1a1a1a;font-size:13px;line-height:1.5;padding:32px 40px;max-width:1100px;margin:0 auto}
+  h1{font-size:22px;margin-bottom:4px}
+  h2{font-size:16px;margin:28px 0 10px;padding-bottom:6px;border-bottom:2px solid #e5e7eb}
+  h3{font-size:13px;margin:16px 0 6px;color:#374151}
+  .subtitle{color:#6b7280;font-size:12px;margin-bottom:20px}
+  .summary-grid{display:grid;grid-template-columns:repeat(6,1fr);gap:12px;margin:16px 0 24px}
+  .summary-card{background:#f9fafb;border:1px solid #e5e7eb;border-radius:10px;padding:12px;text-align:center}
+  .summary-num{font-size:24px;font-weight:800;color:#111}
+  .summary-label{font-size:10px;color:#6b7280;text-transform:uppercase;letter-spacing:.4px;margin-top:2px}
+  table{width:100%;border-collapse:collapse;margin:8px 0 16px;font-size:12px}
+  th{background:#f3f4f6;text-align:left;padding:8px 10px;font-weight:700;border-bottom:2px solid #e5e7eb;font-size:11px;text-transform:uppercase;letter-spacing:.3px;color:#374151}
+  td{padding:7px 10px;border-bottom:1px solid #f3f4f6;vertical-align:top}
+  tr:hover{background:#f9fafb}
+  .badge{display:inline-block;padding:2px 8px;border-radius:6px;font-size:10px;font-weight:700;text-transform:uppercase}
+  .badge.approved{background:#d1fae5;color:#065f46}
+  .badge.executed{background:#dbeafe;color:#1e40af}
+  .badge.rejected{background:#fee2e2;color:#991b1b}
+  .badge.pending{background:#fef3c7;color:#92400e}
+  .trust-bar{display:inline-block;height:6px;border-radius:3px;background:#e5e7eb;width:80px;vertical-align:middle}
+  .trust-fill{height:100%;border-radius:3px;background:#3b82f6}
+  .audit-entry{font-size:11px;color:#6b7280;padding:2px 0}
+  .section{page-break-inside:avoid}
+  @media print{body{padding:16px}h2{margin-top:20px}.summary-grid{grid-template-columns:repeat(3,1fr)}}
+  .footer{margin-top:32px;padding-top:12px;border-top:1px solid #e5e7eb;font-size:11px;color:#9ca3af;text-align:center}
+</style></head><body>
+<h1>PactGate\u2122 Workflow Report</h1>
+<div class="subtitle">Generated: ${ts} &bull; Bladnir Tech LLC</div>
+
+<div class="summary-grid">
+  <div class="summary-card"><div class="summary-num">${s.total_cases||0}</div><div class="summary-label">Total Cases</div></div>
+  <div class="summary-card"><div class="summary-num">${s.total_proposals||0}</div><div class="summary-label">Proposals</div></div>
+  <div class="summary-card"><div class="summary-num">${s.approved||0}</div><div class="summary-label">Approved</div></div>
+  <div class="summary-card"><div class="summary-num">${s.rejected||0}</div><div class="summary-label">Rejected</div></div>
+  <div class="summary-card"><div class="summary-num">${s.executed||0}</div><div class="summary-label">Executed</div></div>
+  <div class="summary-card"><div class="summary-num">${s.pending||0}</div><div class="summary-label">Pending</div></div>
+</div>`;
+
+  /* --- Cases --- */
+  html+=`<div class="section"><h2>Cases</h2>
+<table><tr><th>ID</th><th>Name</th><th>Industry</th><th>Current Step</th><th>Status</th><th>Scenario</th><th>Tasks</th></tr>`;
+  (data.cases||[]).forEach(c=>{
+    html+=`<tr><td>${c.id}</td><td>${esc(c.name)}</td><td>${c.industry}</td><td>${esc(c.queue)}</td><td>${c.state}</td><td>${esc(c.scenario_label)}</td><td>${(c.tasks||[]).length}</td></tr>`;
+  });
+  html+=`</table></div>`;
+
+  /* --- Proposals & Decisions --- */
+  html+=`<div class="section"><h2>Proposals &amp; Decisions</h2>`;
+  if(!(data.proposals||[]).length){
+    html+=`<p style="color:#6b7280">No proposals created yet. Run the demo to generate proposals.</p>`;
+  }else{
+    html+=`<table><tr><th>ID</th><th>Case</th><th>Action</th><th>Status</th><th>Proposed By</th><th>Proposed At</th><th>Approved By</th><th>Executed By</th></tr>`;
+    (data.proposals||[]).forEach(p=>{
+      const action=p.action||{};
+      html+=`<tr>
+        <td>${esc(p.id)}</td>
+        <td>${esc(p.case_name)}</td>
+        <td>${esc(action.label||action.type||"\u2014")}</td>
+        <td><span class="badge ${p.status}">${p.status}</span></td>
+        <td>${esc(p.proposed_by||"\u2014")}</td>
+        <td>${p.proposed_at?new Date(p.proposed_at).toLocaleString():"\u2014"}</td>
+        <td>${esc(p.approved_by||"\u2014")}</td>
+        <td>${esc(p.executed_by||"\u2014")}</td>
+      </tr>`;
+    });
+    html+=`</table>`;
+
+    /* Detailed audit trails */
+    html+=`<h3>Audit Trails</h3>`;
+    (data.proposals||[]).forEach(p=>{
+      if(!(p.audit||[]).length)return;
+      html+=`<div style="margin-bottom:12px"><b>${esc(p.id)}</b> \u2014 ${esc(p.case_name)}`;
+      (p.audit||[]).forEach(a=>{
+        const meta=a.meta?(" \u2014 "+Object.entries(a.meta).map(([k,v])=>k+": "+v).join(", ")):"";
+        html+=`<div class="audit-entry">${a.ts?new Date(a.ts).toLocaleTimeString():""} &bull; ${esc(a.event)}${meta}</div>`;
+      });
+      html+=`</div>`;
+    });
+  }
+  html+=`</div>`;
+
+  /* --- AI Trust Status --- */
+  html+=`<div class="section"><h2>AI Trust Status</h2>`;
+  if(!(data.trust_scopes||[]).length){
+    html+=`<p style="color:#6b7280">No trust data recorded yet.</p>`;
+  }else{
+    html+=`<table><tr><th>Queue</th><th>Automation Level</th><th>Trust Score</th><th>Proposals</th><th>Executions</th><th>Override Rate</th></tr>`;
+    (data.trust_scopes||[]).forEach(t=>{
+      html+=`<tr>
+        <td>${esc(t.queue)}</td>
+        <td>${esc(t.stage)}</td>
+        <td><span class="trust-bar"><span class="trust-fill" style="width:${t.trust_score}%"></span></span> ${t.trust_score}%</td>
+        <td>${t.proposals}</td>
+        <td>${t.executions}</td>
+        <td>${t.override_rate}%</td>
+      </tr>`;
+    });
+    html+=`</table>`;
+  }
+  html+=`</div>`;
+
+  /* --- Activity Log --- */
+  html+=`<div class="section"><h2>Activity Log</h2>
+<table><tr><th>Time</th><th>Category</th><th>Event</th><th>Details</th></tr>`;
+  (data.activity_log||[]).forEach(a=>{
+    html+=`<tr>
+      <td style="white-space:nowrap">${a.ts?new Date(a.ts).toLocaleTimeString():""}</td>
+      <td>${esc(a.category||"")}</td>
+      <td>${esc(a.message||"")}</td>
+      <td style="color:#6b7280">${esc(a.detail||"")}</td>
+    </tr>`;
+  });
+  html+=`</table></div>`;
+
+  html+=`<div class="footer">Bladnir Tech LLC &bull; PactGate\u2122 &bull; Report generated ${ts}</div>`;
+  html+=`</body></html>`;
+
+  const w=window.open("","_blank");
+  if(w){w.document.write(html);w.document.close()}
+  else{showToast("Pop-up blocked \u2014 allow pop-ups for this site","info")}
 }
 
 /* ================================================================
