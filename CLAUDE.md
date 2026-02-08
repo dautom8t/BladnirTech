@@ -4,12 +4,31 @@
 
 BladnirTech is a **workflow orchestration middleware platform** built with FastAPI. It provides **PactGate™**, a governance-first platform for managing automated workflows with human governance gates, AME™ (Adaptive Model Evolution) trust stages, an ML-driven adaptive trust system, a rules engine, and audit-first architecture. The primary demo scenario targets Kroger retail pharmacy prescription refill workflows.
 
+## Quick Start
+
+```bash
+# Install dependencies:
+pip install -r requirements.txt
+
+# Run in demo mode (zero config, just works):
+uvicorn main:app --reload
+
+# Verify:
+curl http://127.0.0.1:8000/health
+# → {"status":"ok","mode":"demo",...}
+
+# Open dashboard:
+open http://127.0.0.1:8000/dashboard
+```
+
+Demo mode auto-creates tables and seeds sample data on startup. No environment variables required.
+
 ## Tech Stack
 
 - **Language:** Python 3.10+
-- **Framework:** FastAPI (ASGI)
-- **Server:** Uvicorn 0.29
-- **ORM:** SQLAlchemy 2.0+
+- **Framework:** FastAPI >=0.110 (ASGI)
+- **Server:** Uvicorn 0.29 (pinned), h11 0.14.0 (pinned)
+- **ORM:** SQLAlchemy 2.0+ (2.0 API via `future=True`)
 - **Validation:** Pydantic 2.6+
 - **Database:** SQLite (demo/dev), PostgreSQL or MySQL (production)
 - **ML:** scikit-learn 1.4+ (GradientBoosting, IsolationForest, CalibratedClassifier)
@@ -20,14 +39,15 @@ BladnirTech is a **workflow orchestration middleware platform** built with FastA
 
 The same codebase runs in **demo**, **development**, and **production** modes controlled by the `ENVIRONMENT` variable. Each mode swaps backend implementations via abstraction layers:
 
-| Component | Demo (default) | Production |
-|---|---|---|
-| **Database** | SQLite | PostgreSQL / MySQL |
-| **Cache** | In-memory dict (TTL) | Redis |
-| **Storage** | Local filesystem | S3 / Cloud |
-| **Auth** | Bypassed (auto-admin) | API key + RBAC |
-| **Data seeding** | Auto-seeds on startup | Manual |
-| **Table creation** | Automatic | Manual migration |
+| Component | Demo (default) | Development | Production |
+|---|---|---|---|
+| **Database** | SQLite | SQLite | PostgreSQL / MySQL |
+| **Cache** | In-memory dict (TTL) | In-memory dict (TTL) | Redis |
+| **Storage** | Local filesystem | Local filesystem | S3 / Cloud |
+| **Auth** | Bypassed (auto-admin) | API key + RBAC | API key + RBAC |
+| **Data seeding** | Auto-seeds on startup | Manual | Manual |
+| **Table creation** | Automatic | Automatic | Manual migration |
+| **SQL logging** | Off | Enabled (`echo=True`) | Off |
 
 ### Running Each Mode
 
@@ -47,8 +67,8 @@ ENVIRONMENT=production DATABASE_URL=postgresql://... BLADNIR_ADMIN_KEY=<32+ char
 ```
 BladnirTech/
 ├── main.py                             # FastAPI app entry point, core API routes, startup hooks
-├── config.py                           # Centralized settings (AppMode, env-var parsing)
-├── requirements.txt                    # Python dependencies
+├── config.py                           # Centralized settings (AppMode, env-var parsing, frozen dataclass)
+├── requirements.txt                    # Python dependencies (8 packages)
 ├── README.md                           # Project readme
 ├── CLAUDE.md                           # This file
 ├── .gitignore                          # Ignores __pycache__, *.db, logs/, data/, .env, IDE dirs
@@ -56,32 +76,32 @@ BladnirTech/
 │   └── AME_ML_SPEC.md                 # ML design spec for AME trust models
 ├── enterprise/                         # Enterprise features
 │   ├── __init__.py
-│   ├── auth.py                         # API key auth, RBAC, rate limiting, demo bypass
-│   ├── governance.py                   # Governance gates (proposal-approval flows, JSON persistence)
-│   ├── audit.py                        # Audit logging to JSONL files (thread-safe, auto-rotating)
-│   └── execute.py                      # Governed execution router (/enterprise/*)
+│   ├── auth.py                         # API key auth, RBAC, rate limiting, demo bypass (~316 lines)
+│   ├── governance.py                   # Governance gates (proposal-approval flows, JSON persistence, ~446 lines)
+│   ├── audit.py                        # Audit logging to JSONL files (thread-safe, auto-rotating, ~248 lines)
+│   └── execute.py                      # Governed execution router (/enterprise/*, ~380 lines)
 ├── models/                             # Data layer
 │   ├── __init__.py
-│   ├── database.py                     # SQLAlchemy engine, session, multi-DB config
-│   ├── schemas.py                      # Pydantic request/response models + state enums
-│   └── rules.py                        # Rule ORM model (condition/action pairs)
+│   ├── database.py                     # SQLAlchemy engine, session, multi-DB config (~288 lines)
+│   ├── schemas.py                      # Pydantic request/response models + state enums (~95 lines)
+│   └── rules.py                        # Rule ORM model (condition/action pairs, ~127 lines)
 ├── services/                           # Business logic
 │   ├── __init__.py
-│   ├── workflow.py                     # Workflow/Task/Event ORM models + CRUD (cache-backed reads)
-│   ├── rules.py                        # Rules engine (evaluation, CRUD)
-│   ├── cache.py                        # Cache abstraction (MemoryCache / RedisCache)
-│   ├── storage.py                      # Storage abstraction (LocalStorage / S3Storage)
-│   ├── integration.py                  # External system integration stubs (EHR, pharmacy, payer)
-│   ├── kroger_retail_pack.py           # Kroger pharmacy demo scenario (/kroger/*)
-│   ├── bladnir_dashboard.py            # Dashboard UI + API (/dashboard/*) — largest service file
-│   └── demo_hub.py                     # Demo hub landing page (/demo)
+│   ├── workflow.py                     # Workflow/Task/Event ORM models + CRUD (cache-backed reads, ~259 lines)
+│   ├── rules.py                        # Rules engine (evaluation, CRUD, ~60 lines)
+│   ├── cache.py                        # Cache abstraction (MemoryCache / RedisCache, ~180 lines)
+│   ├── storage.py                      # Storage abstraction (LocalStorage / S3Storage, ~177 lines)
+│   ├── integration.py                  # External system integration stubs (EHR, pharmacy, payer, ~40 lines)
+│   ├── kroger_retail_pack.py           # Kroger pharmacy demo scenario (/kroger/*, ~377 lines)
+│   ├── bladnir_dashboard.py            # Dashboard UI + API (/dashboard/*) — largest file (~1959 lines)
+│   └── demo_hub.py                     # Demo hub landing page (/demo, ~85 lines)
 └── src/
     └── enterprise/
         └── ame/                        # Adaptive Model Evolution — ML-driven trust system
             ├── __init__.py             # Exports AME router
-            ├── models.py               # AMETrustScope, AMEEvent, AMEExecution ORM models
-            ├── service.py              # Trust computation, stage management, execution tracking
-            ├── router.py               # REST API endpoints (/ame/*)
+            ├── models.py               # AMETrustScope, AMEEvent, AMEExecution ORM models (~380 lines)
+            ├── service.py              # Trust computation, stage management, execution tracking (~330 lines)
+            ├── router.py               # REST API endpoints (/ame/*, ~500 lines)
             └── ml/                     # Machine learning layer
                 ├── __init__.py         # Model factory functions
                 ├── features.py         # Feature engineering for all 3 ML models
@@ -92,13 +112,15 @@ BladnirTech/
                 └── trainer.py          # Training orchestration + retrain triggers
 ```
 
+**Total: ~31 Python files, ~7,500+ lines of code.**
+
 ## Environment Variables
 
 | Variable | Default | Description |
 |---|---|---|
-| `ENVIRONMENT` | `demo` | `demo`, `development`, or `production` |
+| `ENVIRONMENT` | `demo` | `demo`, `development`, or `production` (also accepts `prod`) |
 | `DATABASE_URL` | `sqlite:///./BladnirTech.db` | Database connection string |
-| `BLADNIR_ADMIN_KEY` | (built-in for demo) | Admin API key (min 32 chars, required in prod) |
+| `BLADNIR_ADMIN_KEY` | (built-in for demo) | Admin API key (min 32 chars, required in dev/prod) |
 | `BLADNIR_KEY_<NAME>` | (optional) | Service account keys, format `key:role` |
 | `CORS_ORIGINS` | `http://localhost:3000` | Comma-separated allowed origins |
 | `CACHE_BACKEND` | `memory` | `memory` or `redis` |
@@ -121,6 +143,7 @@ BladnirTech/
 ### Core Workflow API (`main.py`)
 
 - `GET /` — Redirects to `/dashboard`
+- `GET /demo` — Redirects to `/dashboard`
 - `GET /health` — Health check (includes cache stats, storage info, mode)
 - `GET /api/settings` — Non-sensitive runtime settings for UI adaptation
 - `POST /api/workflows` — Create workflow
@@ -198,11 +221,23 @@ config.py (Settings singleton)
 SQLite / PostgreSQL    Memory / Redis    Local / S3
 ```
 
+### Router Registration Order
+
+Routers are included in `main.py` in this order (first match wins for overlapping prefixes):
+
+```python
+app.include_router(kroger_router)        # /kroger/*
+app.include_router(demo_router)          # /demo
+app.include_router(dashboard_router)     # /dashboard/*
+app.include_router(enterprise_router)    # /enterprise/*
+app.include_router(ame_router)           # /ame/*
+```
+
 ### Key Patterns
 
-- **Unified Config:** `config.py` exposes a frozen `Settings` dataclass derived from environment variables. Import `settings` anywhere.
-- **Dependency Injection:** FastAPI `Depends()` for DB sessions and auth.
-- **Demo Auth Bypass:** When `auth_enabled=False` (demo mode), `require_auth` returns a built-in admin `UserContext` — no API key needed.
+- **Unified Config:** `config.py` exposes a frozen `Settings` dataclass derived from environment variables. Import `settings` anywhere via `from config import settings`.
+- **Dependency Injection:** FastAPI `Depends()` for DB sessions (`get_db`) and auth (`require_auth`, `require_role`).
+- **Demo Auth Bypass:** When `auth_enabled=False` (demo mode), `require_auth` returns a built-in admin `UserContext(user_id="demo", role="admin", key_id="demo0000")` — no API key needed.
 - **Cache Abstraction:** `services/cache.py` — `MemoryCache` (demo) or `RedisCache` (prod). Workflow reads are cache-backed with 30s TTL; writes invalidate.
 - **Storage Abstraction:** `services/storage.py` — `LocalStorage` (demo) or `S3Storage` (prod). Directory traversal protected.
 - **RBAC:** API key auth with timing-safe HMAC comparison via `enterprise/auth.py`.
@@ -210,8 +245,25 @@ SQLite / PostgreSQL    Memory / Redis    Local / S3
 - **Audit-First:** All significant actions logged to `logs/audit/audit_log.jsonl` (JSONL, thread-safe with `threading.Lock()`, auto-rotating at configurable size threshold).
 - **Rules Engine:** Condition/action pairs evaluated against workflow context (uses `eval()`/`exec()` — demo only, not production-safe).
 - **Multi-DB:** SQLAlchemy abstracts SQLite (NullPool) vs PostgreSQL/MySQL (connection pooling + SSL).
-- **Demo Data:** In-memory dicts (`DEMO_ROWS`, `DEMO_PROPOSALS`) with negative IDs distinguish demo cases from DB-backed workflows.
-- **Auto-Seed:** In demo mode, scenarios are seeded automatically at startup via `app.on_event("startup")`.
+- **Demo Data:** In-memory dicts (`DEMO_ROWS`, `DEMO_PROPOSALS`) in `bladnir_dashboard.py` with negative IDs distinguish demo cases from DB-backed workflows.
+- **Auto-Seed:** In demo mode, scenarios are seeded automatically at startup via `app.on_event("startup")` calling `seed_demo_cases()`.
+- **Explicit Commits:** The `get_db` dependency does not auto-commit; route handlers must call `db.commit()` explicitly. Rollback is automatic on error.
+
+### Dual Declarative Base (Important Gotcha)
+
+The project uses **two separate SQLAlchemy `Base` classes**:
+
+1. **`models.database.Base`** — Used by `Workflow`, `Task`, `Event`, `Rule` models
+2. **`src.enterprise.ame.models.Base`** — Used by `AMETrustScope`, `AMEEvent`, `AMEExecution` models
+
+Both are created at startup in `main.py`:
+
+```python
+Base.metadata.create_all(bind=engine)       # Core models
+AMEBase.metadata.create_all(bind=engine)    # AME models
+```
+
+When adding new ORM models, use the correct Base depending on which subsystem the model belongs to. If creating a model unrelated to AME, inherit from `models.database.Base`.
 
 ### Database Models
 
@@ -235,6 +287,8 @@ State transitions use enums: `WorkflowState`, `TaskState` (defined in `models/sc
 - `data/models/{scope_key}/outcome_v{n}.pkl` — Outcome Predictor model (joblib)
 - `data/models/global/anomaly_v{n}.pkl` — Anomaly Detector model (joblib)
 
+**Note:** `data/` and `logs/` directories are `.gitignore`d and created at runtime.
+
 ## AME Trust System
 
 The Adaptive Model Evolution (AME) system is a core subsystem that manages **trust-based automation progression**. It tracks how reliably the system performs over time and progressively increases automation levels.
@@ -255,6 +309,34 @@ Each scope (defined by tenant/site/queue/action/role) independently progresses t
 - **Value Score:** Time saved relative to manual processing
 - **Override Rate:** How often humans override automated decisions
 
+### Trust Score Formula
+
+Trust is a weighted composite with override penalty:
+
+```
+trust = (w_reliability * reliability
+       + w_alignment * alignment
+       + w_safety * safety_calibration
+       + w_value * value_score)
+       * (1.0 - override_penalty * override_rate)
+```
+
+Default weights: reliability=0.35, alignment=0.25, safety=0.25, value=0.15.
+
+### Stage Promotion Thresholds
+
+| Transition | Trust Score Required | Minimum Evidence |
+|---|---|---|
+| observe → propose | 0.40 | 6 observations |
+| propose → guarded_auto | 0.60 | 3 proposals |
+| guarded_auto → conditional_auto | 0.75 | 3 executions |
+| conditional_auto → full_auto | 0.85 | — |
+| Downgrade (any stage) | Below 0.70 | 3 consecutive failures |
+
+Promotion is also blocked if `override_rate > 0.10` or `observed_error_rate > 0.05`.
+
+These thresholds are set low for demo purposes (see `AMEConfig` in `src/enterprise/ame/service.py`).
+
 ### ML Models
 
 | Model | Algorithm | Features | Purpose |
@@ -274,6 +356,7 @@ ML models gracefully degrade: when untrained, they return cold-start defaults. R
 - Type hints on all function signatures using Pydantic and standard typing
 - Logging via `logging.getLogger(__name__)` per module
 - Thread safety via `threading.Lock()` for shared in-memory state (cache, governance, audit)
+- Section separators using `# =====================================` comment blocks
 
 ### Adding New Endpoints
 
@@ -283,6 +366,7 @@ ML models gracefully degrade: when untrained, they return cold-start defaults. R
 4. Register the router in `main.py` via `app.include_router(router)`
 5. Use `Depends(get_db)` for database access
 6. Use `Depends(require_auth)` or `Depends(require_role("admin"))` for protected endpoints
+7. Call `db.commit()` explicitly after mutations — the session does not auto-commit
 
 ### Adding New Abstraction Backends
 
@@ -295,10 +379,54 @@ To add a new cache or storage backend:
 
 ### Adding New Database Models
 
-1. Define SQLAlchemy model class inheriting from `Base` (in `models/` or `src/enterprise/ame/models.py`)
-2. Define corresponding Pydantic schemas for create/read operations
+1. Define SQLAlchemy model class inheriting from the correct `Base`:
+   - Core models → `from models.database import Base`
+   - AME models → `from src.enterprise.ame.models import Base`
+2. Define corresponding Pydantic schemas for create/read operations in `models/schemas.py`
 3. Tables are auto-created in demo and development modes
 4. No migration framework is in place — schema changes require manual handling in production
+
+### Database Session Pattern
+
+```python
+from models.database import get_db
+from sqlalchemy.orm import Session
+from fastapi import Depends
+
+@app.post("/example")
+def create_example(db: Session = Depends(get_db)):
+    obj = MyModel(name="example")
+    db.add(obj)
+    db.commit()      # Must commit explicitly
+    db.refresh(obj)  # Reload with generated fields
+    return obj
+```
+
+The `get_db` dependency handles rollback on any exception and always closes the session in `finally`.
+
+## Testing
+
+There are no automated tests. To manually verify changes:
+
+```bash
+# Start the server:
+uvicorn main:app --reload
+
+# Health check:
+curl http://127.0.0.1:8000/health
+
+# List workflows (demo data auto-seeded):
+curl http://127.0.0.1:8000/api/workflows
+
+# Dashboard UI:
+open http://127.0.0.1:8000/dashboard
+
+# AME trust dashboard:
+open http://127.0.0.1:8000/ame/dashboard
+
+# Reset all demo data:
+curl -X POST http://127.0.0.1:8000/dashboard/api/reset
+```
 
 ## Known Limitations
 
@@ -307,9 +435,23 @@ To add a new cache or storage backend:
 - **No Docker** — No containerization setup
 - **Rules engine uses `eval()`/`exec()`** — Unsafe for untrusted input; acceptable for demo purposes only
 - **File-based governance persistence** — `data/governance_gates.json` is not database-backed
-- **No migration system** — Schema changes are not versioned
+- **No migration system** — Schema changes are not versioned (no Alembic)
 - **Redis/S3 are stubs** — Production backends require `redis` or `boto3` packages not in `requirements.txt`
 - **Dashboard UI is embedded HTML/JS** — `bladnir_dashboard.py` returns inline HTML; no separate frontend build
+- **Dual Base classes** — Core and AME models use separate declarative bases, requiring both to be created at startup
+- **No async database operations** — All DB access is synchronous despite FastAPI's async capability
+
+## Troubleshooting
+
+| Issue | Cause | Fix |
+|---|---|---|
+| `ModuleNotFoundError: No module named 'config'` | Running from wrong directory | Run `uvicorn` from the `BladnirTech/` root |
+| `AuthenticationError: BLADNIR_ADMIN_KEY not set` | Missing env var in dev/prod mode | Set `BLADNIR_ADMIN_KEY` (32+ chars) or use `ENVIRONMENT=demo` |
+| `sqlite3.OperationalError: database is locked` | Concurrent SQLite writes | Expected under load; use PostgreSQL for concurrency |
+| Tables not created | Running in production mode | Production mode doesn't auto-create tables; run migrations manually |
+| Demo data not appearing | `AUTO_SEED=false` or not in demo mode | Set `ENVIRONMENT=demo` and `AUTO_SEED=true` |
+| AME models not created | `AMEBase.metadata.create_all` failed | Check `main.py` startup logs for errors |
+| `data/` or `logs/` missing | First run, directories not yet created | Created automatically at runtime; both are `.gitignore`d |
 
 ## Security Notes
 
@@ -322,3 +464,5 @@ To add a new cache or storage backend:
 - The rules engine (`eval`/`exec`) must not be exposed to untrusted user input
 - Storage layer prevents directory traversal attacks via path validation
 - API keys are SHA256-hashed before storage; raw keys are never logged
+- Database credentials are stripped from log output (`DATABASE_URL.split('@')[-1]`)
+- Audit log directory created with restrictive permissions (`0o700`)

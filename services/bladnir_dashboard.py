@@ -31,6 +31,40 @@ router = APIRouter(tags=["dashboard"])
 
 from typing import Dict
 
+# =============================
+# Live Activity Feed (narrates actions in plain English)
+# =============================
+
+ACTIVITY_FEED: List[Dict[str, Any]] = []
+_FEED_MAX = 200  # keep last 200 entries
+
+def _narrate(message: str, category: str = "info", detail: str = "", meta: Dict[str, Any] | None = None):
+    """Add a narrated event to the activity feed. Categories: info, proposal, decision, execution, trust, gate, ml, warning."""
+    entry = {
+        "ts": datetime.utcnow().isoformat() + "Z",
+        "message": message,
+        "category": category,
+        "detail": detail,
+    }
+    if meta:
+        entry["meta"] = meta
+    ACTIVITY_FEED.append(entry)
+    if len(ACTIVITY_FEED) > _FEED_MAX:
+        ACTIVITY_FEED.pop(0)
+
+def _stage_label(stage: str) -> str:
+    return {
+        "observe": "OBSERVE — AI watches, humans do everything",
+        "propose": "PROPOSE — AI suggests actions, humans decide",
+        "guarded_auto": "GUARDED AUTO — AI acts with rollback window",
+        "conditional_auto": "CONDITIONAL AUTO — AI acts when thresholds pass",
+        "full_auto": "FULL AUTO — AI acts autonomously",
+    }.get(stage, stage or "unknown")
+
+def _short_stage(stage: str) -> str:
+    return {"observe": "Observe", "propose": "Propose", "guarded_auto": "Guarded Auto",
+            "conditional_auto": "Conditional Auto", "full_auto": "Full Auto"}.get(stage, stage or "—")
+
 # Single source of truth: transitions + the gate key required
 TRANSITIONS = {
     "contact_manager":  {"to": "inbound_comms",     "gate": "kroger.prescriber_approval_to_data_entry"},
@@ -111,21 +145,46 @@ def dashboard_set_automation(
     decided_by: str = Body("human", embed=True),
     note: str = Body("", embed=True),
 ):
+    # Look up human-readable names for the gate
+    _gate_names = {
+        "kroger.prescriber_approval_to_data_entry": "Prescriber \u2192 Data Entry",
+        "kroger.data_entry_to_preverify_insurance": "Data Entry \u2192 Pre-Verification",
+        "kroger.preverify_to_access_granted": "Pre-Verification \u2192 Dispensing",
+    }
+    gate_label = _gate_names.get(transition_key, transition_key)
+
     if enabled:
         governance.authorize_gate(transition_key, actor=decided_by, note=note)
+        _narrate(
+            f"Gate AUTHORIZED: {gate_label}",
+            "gate",
+            f"Human operator enabled the governance gate for this transition. "
+            f"Cases can now advance through this step — but only if the AME trust stage allows it or a human approves the proposal.",
+        )
     else:
         governance.revoke_gate(transition_key, actor=decided_by, note=note)
+        _narrate(
+            f"Gate REVOKED: {gate_label}",
+            "gate",
+            f"Human operator disabled this governance gate. "
+            f"No cases can advance through this transition until it is re-authorized, regardless of AME trust stage.",
+        )
     return dashboard_get_automation()
 
 DEMO_SCENARIOS = {
     "happy_path": {
-        "label": "Happy Path",
+        "label": "Happy Path — Standard Refill",
+        "description": "A routine atorvastatin refill with valid insurance. Demonstrates the full queue progression from inbound comms through dispensing, with governance gates controlling each transition.",
+        "start_queue": "inbound_comms",
         "insurance_result": "accepted",
         "refills_ok": True,
         "has_insurance": True,
+        "seed_narrative": "Standard prescription refill received. Insurance is active and accepted. This case will flow through each queue — watch how governance gates and AME trust stages control every transition.",
     },
     "insurance_rejected_outdated": {
-        "label": "Insurance Rejected (Outdated/Missing Info → Patient Msg)",
+        "label": "Insurance Rejected — Patient Outreach",
+        "description": "Insurance adjudication fails due to outdated info. The system must pause at pre-verification and trigger patient outreach — showing how governance gates prevent bad transitions and protect patient safety.",
+        "start_queue": "data_entry",
         "insurance_result": "rejected",
         "reject_reason": "Outdated or missing insurance information",
         "refills_ok": True,
@@ -134,9 +193,12 @@ DEMO_SCENARIOS = {
             "type": "insurance_update_request",
             "template": "Your insurance info appears outdated or missing. Please upload/confirm your active plan to continue."
         },
+        "seed_narrative": "Insurance rejected — outdated information on file. Case starts at Data Entry where the technician discovers the issue. The governance gate to Pre-Verification will block advancement until resolved.",
     },
     "prior_auth_required": {
-        "label": "Prior Authorization Required",
+        "label": "Prior Authorization — Multi-Day Wait",
+        "description": "The payer requires prior authorization before dispensing. This demonstrates how PactGate handles waiting states — the case stays governed while PA is pending, and AME learns from the delay patterns.",
+        "start_queue": "pre_verification",
         "insurance_result": "pa_required",
         "refills_ok": True,
         "has_insurance": True,
@@ -145,9 +207,12 @@ DEMO_SCENARIOS = {
             "type": "prior_auth_notice",
             "template": "Your plan requires prior authorization. We've initiated PA; we'll update you as soon as we hear back."
         },
+        "seed_narrative": "Prior authorization required by payer (est. 2 business days). Case starts at Pre-Verification where the pharmacist reviews and initiates the PA process. Trust decisions at this queue are critical — PA requests are high-stakes.",
     },
     "no_refills_prescriber": {
-        "label": "No Refills (Request to Prescriber)",
+        "label": "No Refills — Prescriber Request",
+        "description": "Patient has zero refills remaining. The system generates an outbound request to the prescriber. Shows the contact manager queue in action and how AME tracks prescriber response SLAs.",
+        "start_queue": "contact_manager",
         "insurance_result": "accepted",
         "refills_ok": False,
         "has_insurance": True,
@@ -155,9 +220,12 @@ DEMO_SCENARIOS = {
             "type": "refill_request",
             "template": "No refills remaining. Refill request sent to prescriber."
         },
+        "seed_narrative": "No refills remaining — contacting prescriber. Case starts at Contact Manager where the outbound request is generated. Watch how this queue's trust stage evolves as the system learns prescriber response patterns.",
     },
     "no_insurance_discount_card": {
-        "label": "No Insurance (Apply Discount Card)",
+        "label": "Cash Pay — Discount Card Applied",
+        "description": "Patient has no insurance on file. The system automatically applies a DemoRxSaver discount card. Demonstrates how AME can learn to auto-apply discount programs as trust grows.",
+        "start_queue": "data_entry",
         "insurance_result": "no_insurance",
         "refills_ok": True,
         "has_insurance": False,
@@ -166,6 +234,7 @@ DEMO_SCENARIOS = {
             "type": "discount_card_applied",
             "template": "No active insurance found. We applied a discount card to help complete your prescription."
         },
+        "seed_narrative": "No insurance on file — discount card applied. Case starts at Data Entry where the discount program is matched. As AME trust grows, this discount-card application can become fully automated.",
     },
 }
 DEMO_ROWS = []
@@ -227,6 +296,13 @@ def list_pending_proposals():
     # newest first
     pending.sort(key=lambda x: x["created_at"], reverse=True)
     return {"items": pending, "count": len(pending)}
+
+@router.get("/dashboard/api/activity")
+def get_activity_feed(limit: int = 50):
+    """Returns the live activity feed — newest first, max 200 entries."""
+    items = list(reversed(ACTIVITY_FEED[-limit:]))
+    return {"items": items, "count": len(items)}
+
 
 @router.get("/dashboard/api/cases/{case_id}")
 def get_case_detail(case_id: int, db=Depends(get_db)):
@@ -378,6 +454,20 @@ def propose_automation(
               predicted_safety=safety_score,
               context={"case_id": case_id, "label": label})
 
+    # Narrate the proposal
+    case_name = case.get("name", f"Case #{case_id}")
+    ml_note = ""
+    if ml_decision and ml_decision.get("approve_probability") is not None and ml_decision.get("confidence_band") != "cold_start":
+        ml_note = f" ML predicts {round(ml_decision['approve_probability'] * 100)}% chance of human approval."
+    if ml_outcome and ml_outcome.get("success_probability") is not None and not ml_outcome.get("cold_start"):
+        ml_note += f" Predicted success: {round(ml_outcome['success_probability'] * 100)}%."
+    _narrate(
+        f"PROPOSAL CREATED for {case_name}: {label}",
+        "proposal",
+        f"AME trust stage: {_short_stage(mode)}. Confidence: {round(confidence * 100)}%, Safety: {round(safety_score * 100)}%.{ml_note} "
+        f"This proposal now awaits human review — a pharmacist or manager must approve or reject it before execution.",
+    )
+
     return {
         "ok": True, "proposal": p, "ame_stage": mode,
         "ml_decision": ml_decision, "ml_outcome": ml_outcome,
@@ -425,11 +515,29 @@ def decide_proposal(
         action = p.get("action") or {}
         case = DEMO_BY_ID.get(p.get("case_id"))
         queue = (case or {}).get("queue", "unknown")
+        case_name = (case or {}).get("name", f"Case #{p.get('case_id')}")
         _ame_safe(db, queue=queue, action_type=action.get("type", "advance_queue"),
                   event_type=AMEEventType.PROPOSAL_DECIDED.value,
                   proposal_id=proposal_id,
                   decision=decision, decision_by=decided_by,
                   decision_reason=note or decision)
+
+        # Narrate the decision
+        if decision == "approve":
+            _narrate(
+                f"APPROVED by {decided_by}: {action.get('label', 'action')} ({case_name})",
+                "decision",
+                f"Human approved this proposal. This approval is recorded by AME as a positive trust signal — "
+                f"the system learns that actions like this in the '{queue}' queue are safe. "
+                f"The proposal can now be executed.",
+            )
+        else:
+            _narrate(
+                f"REJECTED by {decided_by}: {action.get('label', 'action')} ({case_name})",
+                "decision",
+                f"Human rejected this proposal. This rejection teaches AME that the system's suggestion was wrong — "
+                f"too many rejections will slow or prevent trust stage promotion for the '{queue}' queue.",
+            )
 
         return {"ok": True, "proposal": p}
 
@@ -559,6 +667,39 @@ def execute_proposal(
               outcome_success=True, observed_time_saved_sec=30.0)
 
     ame = _ame_trust_info(db, queue, act_type)
+
+    # Narrate the execution
+    case_name = case.get("name", f"Case #{case.get('id')}")
+    act_label = action.get("label", action.get("type", "action"))
+    payload = action.get("payload") or {}
+    from_q = payload.get("from_queue", queue)
+    to_q = payload.get("to_queue", case.get("queue", "?"))
+    if skip_governance:
+        gov_note = (
+            f"Governance gate BYPASSED — AME trust stage '{_short_stage(mode)}' "
+            f"(trust: {round(meta.get('trust', 0) * 100)}%) allows automated execution."
+        )
+        if needs_rollback:
+            gov_note += " A 15-minute rollback window was created — a human can still undo this action."
+    else:
+        gov_note = "Governance gate was checked and authorized by a human operator before execution."
+    _narrate(
+        f"EXECUTED: {case_name} moved {from_q} \u2192 {to_q}",
+        "execution",
+        f"{gov_note} AME recorded this as a successful outcome (+30s saved). "
+        f"Each successful execution builds trust toward higher automation stages.",
+        meta={"ame_stage": mode, "trust": ame.get("trust", 0)},
+    )
+
+    # Check if trust stage might have changed
+    new_stage = ame.get("stage", "observe")
+    if new_stage != mode:
+        _narrate(
+            f"TRUST STAGE CHANGED: '{queue}' queue advanced to {_short_stage(new_stage)}",
+            "trust",
+            _stage_label(new_stage),
+        )
+
     return {"ok": True, "proposal": p, "case": case, "ame": ame, "ame_stage": mode}
 
 @router.get("/dashboard/api/scenarios")
@@ -568,7 +709,12 @@ def list_demo_scenarios():
     """
     items = []
     for sid, s in DEMO_SCENARIOS.items():
-        items.append({"id": sid, "label": s.get("label", sid)})
+        items.append({
+            "id": sid,
+            "label": s.get("label", sid),
+            "description": s.get("description", ""),
+            "start_queue": s.get("start_queue", "inbound_comms"),
+        })
     return {"scenarios": items}
 
 # =============================
@@ -705,6 +851,25 @@ def seed_ml_training_data(db=Depends(get_db)):
     results = trainer.train_all(db)
     _ml_clear_cache()
 
+    # Narrate ML training
+    parts = []
+    if results.get("decision", {}).get("trained"):
+        acc = round(results["decision"].get("metrics", {}).get("accuracy", 0) * 100)
+        parts.append(f"Decision Predictor ({acc}% accuracy)")
+    if results.get("outcome", {}).get("trained"):
+        acc = round(results["outcome"].get("metrics", {}).get("accuracy", 0) * 100)
+        parts.append(f"Outcome Predictor ({acc}% accuracy)")
+    if results.get("anomaly", {}).get("trained"):
+        parts.append("Anomaly Detector")
+    _narrate(
+        f"ML MODELS TRAINED on {created} synthetic events",
+        "ml",
+        f"Models now active: {', '.join(parts) if parts else 'none (insufficient data)'}. "
+        f"The Decision Predictor forecasts human approval likelihood. "
+        f"The Outcome Predictor estimates action success probability. "
+        f"These predictions appear on proposals and inform auto-step decisions.",
+    )
+
     return {"ok": True, "events_created": created, "training_results": results}
 
 
@@ -753,6 +918,15 @@ def reset_dashboard(db=Depends(get_db)):
     except Exception as exc:
         log.warning("ML cache clear failed: %s", exc)
 
+    # 5. Clear activity feed
+    ACTIVITY_FEED.clear()
+    _narrate(
+        "Dashboard reset to clean slate.",
+        "info",
+        "All demo cases, proposals, AME trust data, governance gates, and ML models cleared. "
+        "Ready for a fresh demo — seed scenarios to begin.",
+    )
+
     return {"ok": True, "message": "Dashboard reset to clean slate"}
 
 @router.post("/dashboard/api/seed")
@@ -770,19 +944,46 @@ def seed_demo_cases(
         s = DEMO_SCENARIOS.get(sid, DEMO_SCENARIOS["happy_path"])
         demo_id = -(len(DEMO_ROWS) + 1)
 
-        # Pitch mode: start all scenarios at the same queue for consistent demos
-        start_queue = "inbound_comms"
+        # Each scenario starts at its own queue for visual variety
+        start_queue = s.get("start_queue", "inbound_comms")
+        scenario_label = s.get("label", sid)
+
+        # Build scenario-specific events that tell the story
+        events = [
+            {"event_type": "case_seeded", "payload": {"scenario_id": sid, "label": scenario_label, "description": s.get("description", "")}},
+            {"event_type": "queue_changed", "payload": {"from": "none", "to": start_queue}},
+            {"event_type": "insurance_adjudicated", "payload": {"payer": "AutoPayer", "result": s.get("insurance_result", "accepted")}},
+        ]
+
+        # Add scenario-specific context events
+        if s.get("reject_reason"):
+            events.append({"event_type": "insurance_rejection_detail", "payload": {"reason": s["reject_reason"]}})
+        if s.get("pa"):
+            events.append({"event_type": "prior_auth_initiated", "payload": {"eta_days": s["pa"]["eta_days"], "status": "pending"}})
+        if s.get("prescriber_request"):
+            events.append({"event_type": "prescriber_request_sent", "payload": s["prescriber_request"]})
+        if s.get("discount_card"):
+            events.append({"event_type": "discount_card_applied", "payload": s["discount_card"]})
+        if s.get("patient_message"):
+            events.append({"event_type": "patient_notification_queued", "payload": s["patient_message"]})
+
+        # Build scenario-specific tasks
+        tasks = [{"name": "Enter NPI + patient DOB", "assigned_to": "—", "state": "open"}]
+        if not s.get("refills_ok"):
+            tasks.append({"name": "Request refill authorization from prescriber", "assigned_to": "Store Tech", "state": "pending"})
+        if s.get("insurance_result") == "pa_required":
+            tasks.append({"name": "Monitor prior authorization status", "assigned_to": "System", "state": "pending"})
+        if s.get("insurance_result") == "rejected":
+            tasks.append({"name": "Contact patient re: insurance update", "assigned_to": "Store Tech", "state": "pending"})
 
         raw = {
             "id": demo_id,
-            "name": f"Kroger • RX-{1000 + idx} (Demo)",
-            "state": "INBOUND",
-            "tasks": [{"name": "Enter NPI + patient DOB", "assigned_to": "—", "state": "open"}],
-            "events": [
-                {"event_type": "case_seeded", "payload": {"scenario_id": sid, "label": s.get("label")}},
-                {"event_type": "queue_changed", "payload": {"from": "none", "to": start_queue}},
-                {"event_type": "insurance_adjudicated", "payload": {"payer": "AutoPayer", "result": s.get("insurance_result", "accepted")}},
-            ],
+            "name": f"Kroger \u2022 RX-{1000 + idx} (Demo)",
+            "state": "ACTIVE",
+            "scenario_id": sid,
+            "scenario_label": scenario_label,
+            "tasks": tasks,
+            "events": events,
         }
 
         row = {
@@ -790,6 +991,8 @@ def seed_demo_cases(
             "name": raw["name"],
             "state": raw["state"],
             "queue": start_queue,
+            "scenario_id": sid,
+            "scenario_label": scenario_label,
             "insurance": f"AutoPayer: {s.get('insurance_result','accepted')}",
             "tasks": len(raw["tasks"]),
             "events": len(raw["events"]),
@@ -804,9 +1007,22 @@ def seed_demo_cases(
     if seed_all:
         for i, sid in enumerate(DEMO_SCENARIOS.keys(), start=1):
             _mk_case(sid, i)
+        _narrate(
+            f"Seeded {len(DEMO_ROWS)} demo cases across the pipeline.",
+            "info",
+            "Each scenario starts at a different queue to show the full pharmacy workflow. "
+            "Cases are governed by authorization gates — toggle gates to allow progression. "
+            "AME trust starts at OBSERVE: every action requires human approval.",
+        )
         return {"ok": True, "count": len(DEMO_ROWS)}
     else:
         row = _mk_case(scenario_id, 1)
+        s = DEMO_SCENARIOS.get(scenario_id, {})
+        _narrate(
+            f"Seeded: {s.get('label', scenario_id)}",
+            "info",
+            s.get("seed_narrative", s.get("description", "")),
+        )
         return {"ok": True, "count": 1, "id": row["id"]}
 
 @router.get("/dashboard/api/workflows")
@@ -1000,6 +1216,33 @@ def dashboard_auto_step(
                   proposal_id=pid, outcome_success=True, observed_time_saved_sec=30.0)
 
         ame = _ame_trust_info(db, cur)
+
+        # Narrate auto-step
+        case_name = row.get("name", f"Case #{workflow_id}")
+        trust_pct = round(ame.get("trust", 0) * 100)
+        if mode in ("guarded_auto", "conditional_auto", "full_auto"):
+            gov_msg = f"AME trust stage '{_short_stage(mode)}' ({trust_pct}%) allowed automated execution — governance gate bypassed."
+            if exe:
+                gov_msg += f" Rollback window active: a human can undo this within 15 minutes."
+        else:
+            gov_msg = f"AME stage is '{_short_stage(mode)}' — governance gate was required and checked before advancement."
+        _narrate(
+            f"AUTO-STEP: {case_name} moved {cur} \u2192 {nxt}",
+            "execution",
+            f"{gov_msg} AME logged a complete trust cycle (propose \u2192 approve \u2192 outcome). "
+            f"Trust score: {trust_pct}%. Each successful auto-step builds toward higher automation.",
+            meta={"ame_stage": mode, "trust": ame.get("trust", 0)},
+        )
+
+        # Check for stage change
+        new_stage = ame.get("stage", "observe")
+        if new_stage != mode:
+            _narrate(
+                f"TRUST STAGE CHANGED: '{cur}' queue is now {_short_stage(new_stage)}!",
+                "trust",
+                _stage_label(new_stage),
+            )
+
         result = {"ok": True, "from": cur, "to": nxt, "ame": ame, "ame_stage": mode}
         if exe:
             result["rollback_until"] = str(exe.reversible_until)
@@ -1154,6 +1397,41 @@ def dashboard_ui():
     .anomaly-banner{padding:8px 20px;background:rgba(248,113,113,.1);border-bottom:1px solid rgba(248,113,113,.25);color:#f87171;font-size:12px;display:none;align-items:center;gap:8px}
     .anomaly-banner.show{display:flex}
 
+    /* --- Activity Feed --- */
+    .feed-strip{padding:0 20px;border-bottom:1px solid var(--line);background:rgba(8,11,16,.85);max-height:0;overflow:hidden;transition:max-height .35s ease,padding .35s ease}
+    .feed-strip.open{max-height:220px;padding:10px 20px}
+    .feed-toggle{display:flex;align-items:center;gap:8px;padding:6px 20px;border-bottom:1px solid var(--line);background:rgba(8,11,16,.6);cursor:pointer;user-select:none}
+    .feed-toggle:hover{background:rgba(255,255,255,.03)}
+    .feed-toggle-title{font-size:11px;font-weight:700;color:#a78bfa;text-transform:uppercase;letter-spacing:.5px}
+    .feed-toggle-arrow{color:var(--muted);font-size:12px;transition:transform .25s}
+    .feed-toggle-arrow.open{transform:rotate(180deg)}
+    .feed-badge{background:rgba(167,139,250,.15);color:#a78bfa;font-size:10px;padding:1px 7px;border-radius:999px;font-weight:600}
+    .feed-list{max-height:180px;overflow-y:auto;display:flex;flex-direction:column;gap:3px}
+    .feed-item{font-size:11.5px;line-height:1.45;padding:5px 8px;border-radius:6px;border-left:3px solid transparent;background:rgba(255,255,255,.02)}
+    .feed-item[data-cat="proposal"]{border-left-color:#3b82f6}
+    .feed-item[data-cat="decision"]{border-left-color:#a78bfa}
+    .feed-item[data-cat="execution"]{border-left-color:#4ade80}
+    .feed-item[data-cat="trust"]{border-left-color:#fbbf24}
+    .feed-item[data-cat="gate"]{border-left-color:#f97316}
+    .feed-item[data-cat="ml"]{border-left-color:#06b6d4}
+    .feed-item[data-cat="warning"]{border-left-color:#f87171}
+    .feed-item[data-cat="info"]{border-left-color:#6b7280}
+    .feed-msg{font-weight:600;color:#eaeaea}
+    .feed-detail{color:var(--muted);font-size:10.5px;margin-top:1px}
+    .feed-ts{color:#4b5563;font-size:9.5px;float:right;margin-left:8px}
+
+    /* --- Scenario description --- */
+    .scenario-desc{font-size:11px;color:var(--muted);padding:6px 20px;border-bottom:1px solid var(--line);background:rgba(8,11,16,.5);display:none;line-height:1.5}
+    .scenario-desc.show{display:block}
+
+    /* --- Scenario label on case card --- */
+    .pipe-card-scenario{font-size:9px;color:#a78bfa;margin-top:2px;font-weight:600;text-transform:uppercase;letter-spacing:.3px}
+
+    /* --- Stage tooltip --- */
+    .stage-tip{position:relative;cursor:help}
+    .stage-tip:hover .stage-tip-text{opacity:1;pointer-events:auto;transform:translateY(0)}
+    .stage-tip-text{position:absolute;bottom:calc(100% + 8px);left:0;min-width:260px;max-width:320px;background:#1e293b;border:1px solid rgba(255,255,255,.12);border-radius:8px;padding:8px 10px;font-size:11px;color:#b0c4d8;line-height:1.5;z-index:100;opacity:0;pointer-events:none;transform:translateY(4px);transition:opacity .2s,transform .2s;box-shadow:0 4px 16px rgba(0,0,0,.4)}
+
     /* --- Responsive --- */
     @media(max-width:960px){.pipeline{flex-wrap:wrap;gap:8px}.pipe-col{min-width:140px;max-width:none;flex:1 1 45%}.pipe-arrow{display:none}.detail-grid{grid-template-columns:1fr}.ml-grid{grid-template-columns:1fr 1fr}}
 
@@ -1258,6 +1536,22 @@ def dashboard_ui():
   <b>Anomaly Detected</b> <span id="anomalyDetail"></span>
 </div>
 
+<!-- ====== Scenario Description Bar ====== -->
+<div class="scenario-desc" id="scenarioDesc"></div>
+
+<!-- ====== Live Activity Feed ====== -->
+<div class="feed-toggle" id="feedToggle" onclick="toggleFeed()">
+  <span class="feed-toggle-title">Live Activity</span>
+  <span class="feed-badge" id="feedCount">0</span>
+  <div style="flex:1"></div>
+  <span class="feed-toggle-arrow" id="feedArrow">&#9660;</span>
+</div>
+<div class="feed-strip" id="feedStrip">
+  <div class="feed-list" id="feedList">
+    <div class="feed-item" data-cat="info"><span class="feed-msg">Ready.</span> <span class="feed-detail">Seed a scenario to begin the demo. The activity feed will narrate every action as it happens.</span></div>
+  </div>
+</div>
+
 <!-- ====== Pipeline board (full-width, horizontal) ====== -->
 <div class="pipeline" id="board"></div>
 
@@ -1353,8 +1647,32 @@ def dashboard_ui():
 
 <script>
 let ALL=[], AUTH={}, AME_SCOPES={}, ML_STATS=null, selected=null, repTimer=null, authOpen=false;
+let SCENARIOS=[], feedOpen=false;
 
 function setStatus(t){ document.getElementById('status').textContent=t }
+
+/* ---------- Activity Feed ---------- */
+function toggleFeed(){
+  feedOpen=!feedOpen;
+  document.getElementById('feedStrip').classList.toggle('open',feedOpen);
+  document.getElementById('feedArrow').classList.toggle('open',feedOpen);
+}
+async function fetchActivityFeed(){
+  try{
+    const d=await api("/dashboard/api/activity?limit=40");
+    const items=d.items||[];
+    const el=document.getElementById('feedList');
+    document.getElementById('feedCount').textContent=items.length;
+    if(!items.length){el.innerHTML='<div class="feed-item" data-cat="info"><span class="feed-msg">No activity yet.</span> <span class="feed-detail">Seed a scenario and start interacting to see live narration here.</span></div>';return}
+    el.innerHTML=items.map(it=>{
+      const ts=it.ts?it.ts.substring(11,19):'';
+      return '<div class="feed-item" data-cat="'+(it.category||'info')+'"><span class="feed-ts">'+ts+'</span><span class="feed-msg">'+esc(it.message)+'</span>'+(it.detail?'<div class="feed-detail">'+esc(it.detail)+'</div>':'')+'</div>';
+    }).join('');
+    /* auto-scroll to top (newest first) */
+    el.scrollTop=0;
+  }catch(e){console.warn("feed:",e)}
+}
+function esc(s){if(!s)return'';return s.replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;')}
 
 async function api(path, opts={}){
   const res=await fetch(path,{headers:{"Content-Type":"application/json",...(opts.headers||{})},...opts});
@@ -1369,19 +1687,29 @@ function toggleJson(){const e=document.getElementById("json");e.style.display=e.
 /* ---------- Scenarios ---------- */
 async function loadScenarios(){
   const d=await api("/dashboard/api/scenarios");
+  SCENARIOS=d.scenarios||[];
   const sel=document.getElementById("scenarioSelect");
   sel.innerHTML="";
-  (d.scenarios||[]).forEach(s=>{const o=document.createElement("option");o.value=s.id;o.textContent=s.label+" ("+s.id+")";sel.appendChild(o)});
+  SCENARIOS.forEach(s=>{const o=document.createElement("option");o.value=s.id;o.textContent=s.label;sel.appendChild(o)});
+  sel.onchange=showScenarioDesc;
+  showScenarioDesc();
+}
+function showScenarioDesc(){
+  const sid=document.getElementById("scenarioSelect").value;
+  const s=SCENARIOS.find(x=>x.id===sid);
+  const el=document.getElementById("scenarioDesc");
+  if(s&&s.description){el.textContent=s.description;el.classList.add("show")}
+  else{el.classList.remove("show")}
 }
 async function seedScenario(){
   setStatus("Seeding\u2026");
   await api("/dashboard/api/seed",{method:"POST",body:JSON.stringify({scenario_id:document.getElementById("scenarioSelect").value||"happy_path",seed_all:false})});
-  await refreshAll();setStatus("Ready");
+  await refreshAll();if(!feedOpen)toggleFeed();setStatus("Ready");
 }
 async function seedAll(){
   setStatus("Seeding all\u2026");
   await api("/dashboard/api/seed",{method:"POST",body:JSON.stringify({scenario_id:"happy_path",seed_all:true})});
-  await refreshAll();setStatus("Ready");
+  await refreshAll();if(!feedOpen)toggleFeed();setStatus("Ready");
 }
 
 /* ---------- AME scopes (for pipeline badges) ---------- */
@@ -1396,6 +1724,13 @@ async function fetchAmeScopes(){
   }catch(e){console.warn("AME scopes:",e)}
 }
 function stageName(s){return{observe:"Observe",propose:"Propose",guarded_auto:"Guarded",conditional_auto:"Conditional",full_auto:"Full Auto"}[s]||s||"\u2014"}
+function stageExplain(s){return{
+  observe:"OBSERVE: AI watches and learns from human decisions. All actions require manual approval through governance gates.",
+  propose:"PROPOSE: AI now suggests actions with confidence scores. Humans still make the final decision, but AI is learning what gets approved.",
+  guarded_auto:"GUARDED AUTO: AI executes automatically with a 15-minute rollback window. Humans can undo any action within that window.",
+  conditional_auto:"CONDITIONAL AUTO: AI executes when confidence and safety thresholds are met. Near-full automation with safety checks.",
+  full_auto:"FULL AUTO: AI acts autonomously. Earned through consistent reliability, alignment with human decisions, and safety calibration.",
+}[s]||"No trust data yet. Seed scenarios and process cases to build trust."}
 function trustColor(t){if(t>=.8)return"#4ade80";if(t>=.6)return"#fbbf24";if(t>=.4)return"#60a5fa";return"#6b7280"}
 
 /* ---------- Board ---------- */
@@ -1436,22 +1771,25 @@ function renderBoard(){
 
     const col=document.createElement("div");col.className="pipe-col";
 
-    /* header */
+    /* header with stage tooltip */
     const hdr=document.createElement("div");hdr.className="pipe-header";
     hdr.innerHTML=
       '<div class="pipe-title">'+title+' <span style="color:var(--muted);font-weight:400">('+cnt+')</span></div>'+
-      '<div class="pipe-badge" data-stage="'+stage+'">'+stageName(stage)+(trust>0?' \u2022 '+Math.round(trust*100)+'%':'')+'</div>'+
+      '<div class="stage-tip"><div class="pipe-badge" data-stage="'+stage+'">'+stageName(stage)+(trust>0?' \u2022 '+Math.round(trust*100)+'%':'')+'</div>'+
+      '<div class="stage-tip-text">'+stageExplain(stage)+'</div></div>'+
       '<div class="pipe-trust"><div class="pipe-trust-fill" style="width:'+Math.round(trust*100)+'%;background:'+trustColor(trust)+'"></div></div>';
     col.appendChild(hdr);
 
-    /* body: case cards */
+    /* body: case cards with scenario labels */
     const body=document.createElement("div");body.className="pipe-body";
     cols[key].forEach(r=>{
       const card=document.createElement("div");
       card.className="pipe-card"+(selected&&selected.id===r.id?" active":"");
       card.onclick=()=>selectCase(r.id);
       const short=(r.name||"").replace("Kroger \u2022 ","").replace(" (Demo)","");
-      card.innerHTML='<div class="pipe-card-name">'+short+'</div><div class="pipe-card-ins">'+(r.insurance||"\u2014")+'</div>';
+      let scenarioTag='';
+      if(r.scenario_label){scenarioTag='<div class="pipe-card-scenario">'+esc(r.scenario_label.split(' — ')[0]||r.scenario_label)+'</div>';}
+      card.innerHTML='<div class="pipe-card-name">'+short+'</div>'+scenarioTag+'<div class="pipe-card-ins">'+(r.insurance||"\u2014")+'</div>';
       body.appendChild(card);
     });
     col.appendChild(body);
@@ -1663,7 +2001,7 @@ async function refreshAll(){
       api("/dashboard/api/automation").catch(e=>{console.error("automation:",e);return{authorizations:{}}})
     ]);
     ALL=d1.workflows||[];AUTH=d2.authorizations||{};
-    await Promise.all([fetchAmeScopes(),fetchMlStats().catch(()=>{})]);
+    await Promise.all([fetchAmeScopes(),fetchMlStats().catch(()=>{}),fetchActivityFeed().catch(()=>{})]);
     renderBoard();
     if(selected){const wf=ALL.find(x=>x.id===selected.id);if(wf)renderDetails(wf)}
     if(authOpen)refreshAuthModal().catch(()=>{});
@@ -1745,7 +2083,7 @@ async function resetDashboard(){
 const TUT_STEPS = [
   {
     title: "Seed Demo Data",
-    body: "First, let's populate the board with prescription cases. Click the <b>Seed All</b> button to create demo scenarios across different queues.",
+    body: "First, let's populate the board. Click <b>Seed All</b> to create 5 different pharmacy scenarios — each starts at a different queue so you can see the full pipeline in action.",
     target: ()=>document.querySelector('.controls button:nth-child(3)'),
     position: "bottom",
     waitForClick: true,
@@ -1753,7 +2091,7 @@ const TUT_STEPS = [
   },
   {
     title: "The Pipeline Board",
-    body: "Cases flow left-to-right through pharmacy queues: Contact Manager, Inbound Comms, Data Entry, Pre-Verification, Dispensing, and Verification. Each column shows its <b>AME trust stage</b> and trust score.",
+    body: "Cases flow left-to-right through pharmacy queues. Each column shows its <b>AME trust stage</b> (hover the badge for details) and trust score. Notice how different scenarios land at different stages of the workflow.",
     target: ()=>document.getElementById('board'),
     position: "bottom",
   },
@@ -1818,8 +2156,14 @@ const TUT_STEPS = [
     position: "bottom",
   },
   {
+    title: "Live Activity Feed",
+    body: "The <b>Live Activity</b> bar narrates every action in plain English — proposals, decisions, executions, trust changes, and governance events. Click it to expand and follow along as you interact.",
+    target: ()=>document.getElementById('feedToggle'),
+    position: "bottom",
+  },
+  {
     title: "You're All Set!",
-    body: "You now know the core workflow: <b>Seed -> Select -> Gate -> Propose -> Approve -> Execute</b>. Try different scenarios, toggle gates, and watch AME trust levels change. Click the <b>?</b> button anytime to restart this tour.",
+    body: "You now know the core workflow: <b>Seed \u2192 Select \u2192 Gate \u2192 Propose \u2192 Approve \u2192 Execute</b>. Watch the Live Activity feed and AME trust levels as the system learns. Try different scenarios, toggle gates, and seed ML data to see predictions appear. Click <b>?</b> anytime to restart this tour.",
     target: null,
     position: "center",
   },
