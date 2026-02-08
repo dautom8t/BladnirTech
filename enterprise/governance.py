@@ -399,21 +399,25 @@ def get_gate_history(key: str) -> List[Dict[str, any]]:
 def reset_all_gates(actor: str = "system", note: str = "Emergency reset") -> int:
     """
     Emergency function to revoke all gates.
-    
+
     Args:
         actor: User/system performing reset
         note: Justification
-        
+
     Returns:
         Number of gates revoked
     """
-    count = 0
+    # Collect keys to revoke under the lock, then revoke outside it.
+    # revoke_gate() acquires _lock internally, so holding _lock here
+    # would deadlock (threading.Lock is not reentrant).
     with _lock:
-        for key in list(_GATES.keys()):
-            if _GATES[key].enabled:
-                revoke_gate(key, actor=actor, note=note)
-                count += 1
-    
+        keys_to_revoke = [key for key, gate in _GATES.items() if gate.enabled]
+
+    count = 0
+    for key in keys_to_revoke:
+        revoke_gate(key, actor=actor, note=note)
+        count += 1
+
     logger.warning(f"Emergency reset: {count} gates revoked by {actor}")
     return count
 

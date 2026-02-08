@@ -6,6 +6,7 @@ from fastapi.responses import HTMLResponse
 from datetime import datetime
 from typing import Dict, Any, List
 import os
+import threading
 import uuid
 import logging
 log = logging.getLogger("uvicorn.error")
@@ -37,6 +38,7 @@ from typing import Dict
 
 ACTIVITY_FEED: List[Dict[str, Any]] = []
 _FEED_MAX = 200  # keep last 200 entries
+_feed_lock = threading.Lock()
 
 def _narrate(message: str, category: str = "info", detail: str = "", meta: Dict[str, Any] | None = None):
     """Add a narrated event to the activity feed. Categories: info, proposal, decision, execution, trust, gate, ml, warning."""
@@ -48,9 +50,10 @@ def _narrate(message: str, category: str = "info", detail: str = "", meta: Dict[
     }
     if meta:
         entry["meta"] = meta
-    ACTIVITY_FEED.append(entry)
-    if len(ACTIVITY_FEED) > _FEED_MAX:
-        ACTIVITY_FEED.pop(0)
+    with _feed_lock:
+        ACTIVITY_FEED.append(entry)
+        if len(ACTIVITY_FEED) > _FEED_MAX:
+            ACTIVITY_FEED.pop(0)
 
 def _stage_label(stage: str) -> str:
     return {
@@ -327,7 +330,8 @@ def list_pending_proposals():
 @router.get("/dashboard/api/activity")
 def get_activity_feed(limit: int = 50):
     """Returns the live activity feed — newest first, max 200 entries."""
-    items = list(reversed(ACTIVITY_FEED[-limit:]))
+    with _feed_lock:
+        items = list(reversed(ACTIVITY_FEED[-limit:]))
     return {"items": items, "count": len(items)}
 
 
@@ -946,7 +950,8 @@ def reset_dashboard(db=Depends(get_db)):
         log.warning("ML cache clear failed: %s", exc)
 
     # 5. Clear activity feed
-    ACTIVITY_FEED.clear()
+    with _feed_lock:
+        ACTIVITY_FEED.clear()
 
     # 6. Auto-seed fresh demo cases so the board isn't empty
     try:

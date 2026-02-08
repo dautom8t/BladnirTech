@@ -14,7 +14,7 @@ from datetime import datetime
 from typing import List, Optional
 
 from sqlalchemy import Column, DateTime, Enum as SAEnum, ForeignKey, Integer, String, Text
-from sqlalchemy.orm import Session, relationship
+from sqlalchemy.orm import Session, joinedload, relationship
 
 from models import database
 from models.schemas import (
@@ -130,8 +130,12 @@ def get_workflow(db: Session, workflow_id: int) -> Optional[Workflow]:
 
 
 def list_workflows(db: Session) -> List[Workflow]:
-    """List all workflows."""
-    return db.query(Workflow).all()
+    """List all workflows (eager-loads tasks and events to avoid N+1)."""
+    return (
+        db.query(Workflow)
+        .options(joinedload(Workflow.tasks), joinedload(Workflow.events))
+        .all()
+    )
 
 
 def add_task(db: Session, workflow_id: int, task_in: TaskCreate) -> Task:
