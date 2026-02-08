@@ -93,18 +93,18 @@ BladnirTech/
 │   ├── storage.py                      # Storage abstraction (LocalStorage / S3Storage, ~177 lines)
 │   ├── integration.py                  # External system integration stubs (EHR, pharmacy, payer, ~40 lines)
 │   ├── kroger_retail_pack.py           # Kroger pharmacy demo scenario (/kroger/*, ~377 lines)
-│   ├── bladnir_dashboard.py            # Dashboard UI + API (/dashboard/*) — largest file (~1959 lines)
+│   ├── bladnir_dashboard.py            # Dashboard UI + API (/dashboard/*) — largest file (~2739 lines)
 │   └── demo_hub.py                     # Demo hub landing page (/demo, ~85 lines)
 └── src/
     └── enterprise/
         └── ame/                        # Adaptive Model Evolution — ML-driven trust system
             ├── __init__.py             # Exports AME router
-            ├── models.py               # AMETrustScope, AMEEvent, AMEExecution ORM models (~380 lines)
-            ├── service.py              # Trust computation, stage management, execution tracking (~330 lines)
-            ├── router.py               # REST API endpoints (/ame/*, ~500 lines)
+            ├── models.py               # AMETrustScope, AMEEvent, AMEExecution ORM models (~364 lines)
+            ├── service.py              # Trust computation, stage management, execution tracking (~828 lines)
+            ├── router.py               # REST API endpoints (/ame/*, ~945 lines)
             └── ml/                     # Machine learning layer
                 ├── __init__.py         # Model factory functions
-                ├── features.py         # Feature engineering for all 3 ML models
+                ├── features.py         # Feature engineering for all 3 ML models (~600 lines)
                 ├── decision.py         # Approval probability predictor (GradientBoosting)
                 ├── outcome.py          # Success probability predictor (CalibratedClassifier)
                 ├── anomaly.py          # Anomaly detector (IsolationForest)
@@ -112,7 +112,7 @@ BladnirTech/
                 └── trainer.py          # Training orchestration + retrain triggers
 ```
 
-**Total: ~31 Python files, ~7,500+ lines of code.**
+**Total: ~31 Python files, ~9,900+ lines of code.**
 
 ## Environment Variables
 
@@ -163,20 +163,24 @@ BladnirTech/
 
 ### Dashboard (`/dashboard/*`)
 
-- `GET /dashboard` — Interactive dashboard UI (HTML + embedded JS)
+- `GET /dashboard` — Interactive dashboard UI (HTML + embedded JS, mobile-responsive)
 - `GET /dashboard/api/automation` — Get governance gate statuses
 - `POST /dashboard/api/automation` — Authorize/revoke governance gates
 - `GET /dashboard/api/automation/pending` — List pending proposals
+- `GET /dashboard/api/activity` — Get activity log
 - `GET /dashboard/api/cases/{case_id}` — Get case detail with proposals and trust info
 - `POST /dashboard/api/cases/{case_id}/propose` — Propose automated action
 - `POST /dashboard/api/automation/{proposal_id}/decide` — Approve/reject proposal
 - `POST /dashboard/api/automation/{proposal_id}/execute` — Execute approved proposal
 - `GET /dashboard/api/scenarios` — List demo scenarios
+- `GET /dashboard/api/ml-stats` — ML model statistics and metrics
 - `POST /dashboard/api/seed` — Seed demo data
+- `POST /dashboard/api/seed-ml` — Train ML models with demo data
 - `POST /dashboard/api/reset` — Clear all demo data, AME tables, and governance gates
 - `GET /dashboard/api/workflows` — Dashboard workflow list (DB-backed)
 - `POST /dashboard/api/simulate` — Repeat a case N times (load testing / AME training)
 - `POST /dashboard/api/auto-step` — Auto-advance workflow using ML predictions
+- `POST /dashboard/api/run-demo` — Run demo scenarios with guided walkthrough
 
 ### Kroger Demo (`/kroger/*`)
 
@@ -428,6 +432,20 @@ open http://127.0.0.1:8000/ame/dashboard
 curl -X POST http://127.0.0.1:8000/dashboard/api/reset
 ```
 
+## Dashboard Features
+
+The dashboard (`services/bladnir_dashboard.py`) is the largest file in the codebase (~2739 lines) and serves as the primary interactive UI. Key capabilities:
+
+- **Mobile-responsive layout** — CSS media queries adapt the UI for mobile and tablet viewports
+- **Guided walkthrough / tutorial** — Step-by-step demo tutorial with tooltip positioning and scroll-into-view behavior
+- **Live activity narration** — Real-time narrative display of demo actions for investor/stakeholder presentations
+- **Industry-specific queues** — Supports Insurance and HR labels alongside the default Kroger pharmacy scenario
+- **ML integration** — Inline ML model training (`/dashboard/api/seed-ml`), statistics (`/dashboard/api/ml-stats`), and auto-stepping with ML predictions
+- **Demo simulation** — Bulk case simulation (`/dashboard/api/simulate`) for load testing and AME trust training
+- **Auto-play demo** — Automated demo run (`/dashboard/api/run-demo`) with scenario sequencing
+
+The dashboard is a single-page application rendered as inline HTML/CSS/JS from Python. There is no separate frontend build step.
+
 ## Known Limitations
 
 - **No automated tests** — No test framework or test directory exists
@@ -452,6 +470,18 @@ curl -X POST http://127.0.0.1:8000/dashboard/api/reset
 | Demo data not appearing | `AUTO_SEED=false` or not in demo mode | Set `ENVIRONMENT=demo` and `AUTO_SEED=true` |
 | AME models not created | `AMEBase.metadata.create_all` failed | Check `main.py` startup logs for errors |
 | `data/` or `logs/` missing | First run, directories not yet created | Created automatically at runtime; both are `.gitignore`d |
+
+## Recent Changes
+
+Notable changes reflected in the current codebase (most recent first):
+
+- **Industry-specific queues** — Added Insurance/HR queue labels and tasks alongside Kroger pharmacy
+- **Mobile-responsive dashboard** — Added CSS media queries for mobile and tablet viewport support
+- **Database locking fix** — Removed background threads and reduced SQLite timeout to prevent `database is locked` errors during demo resets
+- **Tutorial scroll fix** — Scroll target into view before positioning tooltip during guided walkthrough
+- **Investor-ready demo** — De-jargoned UI, cross-industry scenario labels, business narrative framing
+- **Live activity narration** — Real-time narration of demo actions during guided walkthrough and auto-play
+- **PactGate rebranding** — Renamed from "Control Tower" to "PactGate™" across all UI and documentation
 
 ## Security Notes
 
