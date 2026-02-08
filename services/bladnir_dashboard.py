@@ -1609,8 +1609,97 @@ def dashboard_ui():
     .stage-tip:hover .stage-tip-text{opacity:1;pointer-events:auto;transform:translateY(0)}
     .stage-tip-text{position:absolute;bottom:calc(100% + 8px);left:0;min-width:260px;max-width:320px;background:#1e293b;border:1px solid rgba(255,255,255,.12);border-radius:8px;padding:8px 10px;font-size:11px;color:#b0c4d8;line-height:1.5;z-index:100;opacity:0;pointer-events:none;transform:translateY(4px);transition:opacity .2s,transform .2s;box-shadow:0 4px 16px rgba(0,0,0,.4)}
 
-    /* --- Responsive --- */
-    @media(max-width:960px){.pipeline{flex-wrap:wrap;gap:8px}.pipe-col{min-width:140px;max-width:none;flex:1 1 45%}.pipe-arrow{display:none}.detail-grid{grid-template-columns:1fr}.ml-grid{grid-template-columns:1fr 1fr}}
+    /* --- Responsive: Tablet --- */
+    @media(max-width:960px){
+      .pipeline{flex-wrap:wrap;gap:8px}
+      .pipe-col{min-width:140px;max-width:none;flex:1 1 45%}
+      .pipe-arrow{display:none}
+      .detail-grid{grid-template-columns:1fr}
+      .ml-grid{grid-template-columns:1fr 1fr}
+    }
+
+    /* --- Responsive: Mobile --- */
+    @media(max-width:600px){
+      body{font-size:13px;-webkit-text-size-adjust:100%}
+
+      /* Header: stack vertically */
+      header{flex-wrap:wrap;gap:6px;padding:10px 12px}
+      header b{font-size:14px}
+      header .muted{display:none}
+      header a{margin-left:auto;font-size:11px}
+
+      /* Controls: wrap, stack buttons */
+      .controls{padding:8px 12px;gap:6px}
+      .controls select{min-width:0;flex:1 1 100%;font-size:13px;padding:10px}
+      .controls input{flex:1 1 100%;min-width:0;max-width:none;font-size:13px;padding:10px}
+      .controls button{padding:10px 14px;font-size:12px;flex:1 1 auto}
+      .controls>div[style*="width:1px"]{display:none}
+      .controls>div[style*="flex:1"]{display:none}
+
+      /* ML strip: single column */
+      .ml-strip{padding:10px 12px}
+      .ml-strip-header{flex-wrap:wrap;gap:6px}
+      .ml-strip-title{font-size:11px}
+      .ml-grid{grid-template-columns:1fr;gap:8px}
+      .ml-card{padding:10px}
+      .ml-card-value{font-size:16px}
+      .roi-grid{grid-template-columns:repeat(4,1fr);gap:4px}
+      .roi-num{font-size:15px}
+
+      /* Activity feed */
+      .feed-toggle{padding:8px 12px}
+      .feed-strip.open{padding:8px 12px;max-height:180px}
+
+      /* Pipeline: single column */
+      .pipeline{padding:10px 12px;flex-direction:column;gap:8px;overflow-x:visible}
+      .pipe-col{flex:1 1 100%;min-width:0;max-width:none}
+      .pipe-arrow{display:none}
+      .pipe-body{max-height:200px}
+      .pipe-card{padding:10px 12px}
+      .pipe-card-name{font-size:13px;white-space:normal}
+      .pipe-header{padding:10px 12px}
+
+      /* Detail panel */
+      .detail{padding:0 12px 16px}
+      .detail-bar{flex-direction:column;gap:6px;align-items:flex-start}
+      .detail-actions{margin-left:0;flex-wrap:wrap;width:100%}
+      .detail-actions button{flex:1 1 auto;padding:10px;font-size:12px}
+      .detail-grid{grid-template-columns:1fr;gap:8px}
+      .detail-pills{gap:4px}
+      .detail-pills .pill{font-size:10px;padding:3px 8px}
+
+      /* Auth checkboxes: stack */
+      .auth-row{flex-direction:column;gap:8px;align-items:flex-start}
+      .auth-row label{font-size:12px;padding:4px 0}
+
+      /* Modals: full-width on mobile */
+      #authModal>div{margin:2vh 8px!important;max-width:none!important;max-height:90vh!important;padding:12px!important;border-radius:12px!important}
+
+      /* Tutorial */
+      .tut-splash-card{margin:12px;padding:24px 18px;max-width:none}
+      .tut-splash-card h2{font-size:17px}
+      .tut-splash-card p{font-size:12px}
+      .tut-tooltip{max-width:calc(100vw - 24px);min-width:0;left:12px!important;right:12px}
+      .tut-tooltip h3{font-size:13px}
+      .tut-tooltip p{font-size:12px}
+      .tut-nav button{padding:8px 12px;font-size:12px}
+
+      /* Toast: full width */
+      .toast{left:12px;right:12px;max-width:none;font-size:12px;padding:10px 14px}
+
+      /* Buttons: bigger tap targets */
+      button{min-height:40px;padding:8px 14px}
+      .tut-help-btn{width:44px;height:44px;font-size:18px}
+
+      /* Scenario description */
+      .scenario-desc{padding:6px 12px;font-size:11px}
+
+      /* Anomaly banner */
+      .anomaly-banner{padding:8px 12px;font-size:11px}
+
+      /* Pre/JSON */
+      pre{font-size:10px;padding:10px;max-height:200px}
+    }
 
     /* --- Tutorial Overlay --- */
     .tut-backdrop{position:fixed;inset:0;z-index:10000;pointer-events:none;transition:opacity .3s}
