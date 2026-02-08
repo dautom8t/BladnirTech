@@ -947,14 +947,22 @@ def reset_dashboard(db=Depends(get_db)):
 
     # 5. Clear activity feed
     ACTIVITY_FEED.clear()
+
+    # 6. Auto-seed fresh demo cases so the board isn't empty
+    try:
+        seed_demo_cases(scenario_id="happy_path", seed_all=True)
+        log.info("Re-seeded %d demo cases after reset", len(DEMO_ROWS))
+    except Exception as exc:
+        log.warning("Auto-seed after reset failed: %s", exc)
+
     _narrate(
-        "Fresh start — all data cleared.",
+        "Fresh start — demo reset and reloaded.",
         "info",
-        "Cases, approvals, AI training data, and safety checkpoints all reset. "
-        "Ready for a new demo — click 'Start the Demo' or seed scenarios to begin.",
+        "All data cleared and fresh scenarios loaded. "
+        "Ready for a new demo — click 'Auto-Play Demo' or explore the pipeline.",
     )
 
-    return {"ok": True, "message": "Dashboard reset to clean slate"}
+    return {"ok": True, "message": "Dashboard reset and re-seeded", "cases": len(DEMO_ROWS)}
 
 @router.post("/dashboard/api/seed")
 def seed_demo_cases(
@@ -1857,11 +1865,20 @@ function showToast(msg,type){
 }
 
 async function api(path, opts={}){
-  const res=await fetch(path,{headers:{"Content-Type":"application/json",...(opts.headers||{})},...opts});
-  let txt="",js=null;
-  try{txt=await res.text();js=txt?JSON.parse(txt):null}catch(_){}
-  if(!res.ok) throw new Error((js&&(js.detail||js.message))||txt||('HTTP '+res.status));
-  return js||(txt?JSON.parse(txt):{});
+  const ctrl=new AbortController();
+  const timer=setTimeout(()=>ctrl.abort(),15000);
+  try{
+    const res=await fetch(path,{signal:ctrl.signal,headers:{"Content-Type":"application/json",...(opts.headers||{})},...opts});
+    clearTimeout(timer);
+    let txt="",js=null;
+    try{txt=await res.text();js=txt?JSON.parse(txt):null}catch(_){}
+    if(!res.ok) throw new Error((js&&(js.detail||js.message))||txt||('HTTP '+res.status));
+    return js||(txt?JSON.parse(txt):{});
+  }catch(e){
+    clearTimeout(timer);
+    if(e.name==='AbortError') throw new Error('Request timed out — server may be busy. Try again.');
+    throw e;
+  }
 }
 
 function toggleJson(){const e=document.getElementById("json");e.style.display=e.style.display==="none"?"block":"none"}
@@ -2058,13 +2075,18 @@ async function runFullDemo(){
   btn.textContent="Running\u2026";btn.disabled=true;
 
   try{
-    /* Reset + seed a fresh happy-path case */
+    /* Reset (auto-seeds all scenarios) then seed a focused happy-path case */
     setStatus("Preparing demo\u2026");
-    await api("/dashboard/api/reset",{method:"POST",body:"{}"});
-    const seed=await api("/dashboard/api/seed",{method:"POST",body:JSON.stringify({scenario_id:"happy_path",seed_all:false})});
-    const caseId=seed.id;
+    try{await api("/dashboard/api/reset",{method:"POST",body:"{}"});}catch(_){console.warn("reset slow, continuing")}
     await refreshAll();
     if(!feedOpen)toggleFeed();
+    /* Pick the first happy-path case from auto-seeded data */
+    let caseId=ALL.length?ALL[0].id:null;
+    if(!caseId){
+      const seed=await api("/dashboard/api/seed",{method:"POST",body:JSON.stringify({scenario_id:"happy_path",seed_all:false})});
+      caseId=seed.id;
+      await refreshAll();
+    }
 
     /* Select the case */
     const wf=ALL.find(x=>x.id===caseId);
@@ -2240,6 +2262,7 @@ function renderMlPrediction(mlDec,mlOut){
 }
 
 /* ---------- Refresh ---------- */
+let refreshRetries=0;
 async function refreshAll(){
   setStatus("Loading\u2026");
   try{
@@ -2252,8 +2275,19 @@ async function refreshAll(){
     renderBoard();
     if(selected){const wf=ALL.find(x=>x.id===selected.id);if(wf)renderDetails(wf)}
     if(authOpen)refreshAuthModal().catch(()=>{});
+    refreshRetries=0;
     setStatus("Ready");
-  }catch(e){console.error("refreshAll:",e);setStatus("Error — check console")}
+  }catch(e){
+    console.error("refreshAll:",e);
+    refreshRetries++;
+    if(refreshRetries<3){
+      setStatus("Retrying ("+refreshRetries+"/3)\u2026");
+      await sleep(2000*refreshRetries);
+      return refreshAll();
+    }
+    setStatus("Server slow \u2014 click Refresh to retry");
+    refreshRetries=0;
+  }
 }
 
 /* ---------- Proposal modal ---------- */
@@ -2312,15 +2346,17 @@ async function executeProposal(pid){
 
 /* ---------- Reset ---------- */
 async function resetDashboard(){
-  if(!confirm("Reset everything? This clears all cases, proposals, AME trust data, and governance gates."))return;
+  if(!confirm("Reset everything? This clears all cases, proposals, and AI training data."))return;
   setStatus("Resetting\u2026");
   try{
     await api("/dashboard/api/reset",{method:"POST",body:"{}"});
-    selected=null;
-    document.getElementById("detailPanel").classList.remove("open");
-    await refreshAll();
-    setStatus("Reset complete");
-  }catch(e){console.error("reset:",e);setStatus("Reset failed")}
+  }catch(e){
+    console.warn("reset API slow/failed, refreshing anyway:",e);
+  }
+  selected=null;
+  document.getElementById("detailPanel").classList.remove("open");
+  await refreshAll();
+  setStatus("Ready");
 }
 
 /* ================================================================
@@ -2541,7 +2577,13 @@ window.addEventListener('resize', ()=>{ if(tutActive) tutRender(); });
 /* ---------- Boot ---------- */
 (async()=>{
   try{await loadScenarios()}catch(e){console.error("loadScenarios:",e)}
-  try{await refreshAll()}catch(e){console.error("refreshAll:",e);setStatus("Error — check console")}
+  try{
+    await refreshAll();
+  }catch(e){
+    console.error("boot refreshAll:",e);
+    setStatus("Server warming up \u2014 click Refresh to retry");
+    showToast("Server may be starting up. Click Refresh in a few seconds.","info");
+  }
 })();
 </script>
 </body>
