@@ -911,25 +911,20 @@ def reset_dashboard(db=Depends(get_db)):
     DEMO_PROPOSALS = []
     DEMO_PROPOSAL_BY_ID = {}
 
-    # 2. Clear AME trust tables (with timeout to prevent SQLite locks)
-    import threading
-    def _clear_ame():
-        from src.enterprise.ame.models import AMETrustScope, AMEEvent, AMEExecution
+    # 2. Clear AME trust tables — best-effort, skip if SQLite locks
+    from src.enterprise.ame.models import AMETrustScope, AMEEvent, AMEExecution
+    try:
+        db.execute(AMEExecution.__table__.delete())
+        db.execute(AMEEvent.__table__.delete())
+        db.execute(AMETrustScope.__table__.delete())
+        db.commit()
+        log.info("AME trust data cleared")
+    except Exception as exc:
         try:
-            db.query(AMEExecution).delete()
-            db.query(AMEEvent).delete()
-            db.query(AMETrustScope).delete()
-            db.commit()
-            log.info("AME trust data cleared")
-        except Exception as exc:
             db.rollback()
-            log.warning("AME reset failed: %s", exc)
-
-    t = threading.Thread(target=_clear_ame, daemon=True)
-    t.start()
-    t.join(timeout=3)  # Wait max 3 seconds, then move on
-    if t.is_alive():
-        log.warning("AME reset timed out (SQLite lock) — skipping DB cleanup")
+        except Exception:
+            pass
+        log.warning("AME reset skipped (DB busy): %s", exc)
 
     # 3. Reset governance gates
     try:
