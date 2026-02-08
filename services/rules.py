@@ -10,11 +10,16 @@ content in production without sandboxing.
 
 from __future__ import annotations
 
+import logging
+
 from sqlalchemy.orm import Session
 
+from config import settings, AppMode
 from models.schemas import RuleCreate
 from models import database
-from models.rules import Rule  # <-- If you DO NOT have models/rules.py, tell me and I’ll adjust.
+from models.rules import Rule  # <-- If you DO NOT have models/rules.py, tell me and I'll adjust.
+
+logger = logging.getLogger(__name__)
 
 
 def create_rule(db: Session, rule_in: RuleCreate) -> Rule:
@@ -39,7 +44,14 @@ def evaluate_rules_for_workflow(db: Session, workflow) -> None:
     Evaluate all rules against a given workflow.
 
     This mutates the workflow/tasks in-memory. The caller is responsible for committing.
+
+    In demo mode, rule evaluation is skipped because eval()/exec() on
+    user-supplied strings is unsafe.  Production would need a proper
+    sandboxed evaluator.
     """
+    if settings.mode == AppMode.DEMO:
+        return
+
     rules = list_rules(db)
     if not rules:
         return
@@ -53,8 +65,8 @@ def evaluate_rules_for_workflow(db: Session, workflow) -> None:
 
     for rule in rules:
         try:
-            if bool(eval(rule.condition, {"__builtins__": {}}, ctx)):
-                exec(rule.action, {"__builtins__": {}}, ctx)
+            if bool(eval(rule.condition, {"__builtins__": {}}, ctx)):  # noqa: S307
+                exec(rule.action, {"__builtins__": {}}, ctx)  # noqa: S102
         except Exception:
-            # Demo: ignore bad rules rather than crashing the API
+            logger.debug("Rule %s evaluation failed, skipping", rule.name)
             continue
