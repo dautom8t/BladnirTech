@@ -905,23 +905,26 @@ def reset_dashboard(db=Depends(get_db)):
     """
     global DEMO_ROWS, DEMO_BY_ID, DEMO_PROPOSALS, DEMO_PROPOSAL_BY_ID
 
-    # 1. Clear in-memory demo data
+    # 1. Clear in-memory demo data (instant, never blocks)
     DEMO_ROWS = []
     DEMO_BY_ID = {}
     DEMO_PROPOSALS = []
     DEMO_PROPOSAL_BY_ID = {}
 
-    # 2. Clear AME trust tables
+    # 2. Clear AME trust tables — best-effort, skip if SQLite locks
     from src.enterprise.ame.models import AMETrustScope, AMEEvent, AMEExecution
     try:
-        db.query(AMEExecution).delete()
-        db.query(AMEEvent).delete()
-        db.query(AMETrustScope).delete()
+        db.execute(AMEExecution.__table__.delete())
+        db.execute(AMEEvent.__table__.delete())
+        db.execute(AMETrustScope.__table__.delete())
         db.commit()
         log.info("AME trust data cleared")
     except Exception as exc:
-        db.rollback()
-        log.warning("AME reset failed: %s", exc)
+        try:
+            db.rollback()
+        except Exception:
+            pass
+        log.warning("AME reset skipped (DB busy): %s", exc)
 
     # 3. Reset governance gates
     try:

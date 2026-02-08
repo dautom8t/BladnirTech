@@ -81,7 +81,7 @@ def _get_engine_config(url: str) -> dict:
         config.update({
             "connect_args": {
                 "check_same_thread": False,  # Required for FastAPI
-                "timeout": 20.0,  # Wait up to 20s for locks
+                "timeout": 5.0,  # Wait up to 5s for locks (keep short for demo responsiveness)
             },
             # Use NullPool for SQLite to avoid connection issues
             "poolclass": NullPool,
