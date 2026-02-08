@@ -2468,36 +2468,46 @@ function tutRender(){
   const backdropFill = document.getElementById('tutBackdropFill');
 
   if(targetEl){
-    /* position spotlight over target */
-    const rect = targetEl.getBoundingClientRect();
-    const pad = 8;
-    spotlight.style.display = 'block';
-    spotlight.style.top = (rect.top - pad + window.scrollY) + 'px';
-    spotlight.style.left = (rect.left - pad) + 'px';
-    spotlight.style.width = (rect.width + pad*2) + 'px';
-    spotlight.style.height = (rect.height + pad*2) + 'px';
-    backdropFill.style.display = 'none'; /* spotlight provides the backdrop via box-shadow */
+    /* scroll target into view FIRST, then position after scroll settles */
+    targetEl.scrollIntoView({behavior:'smooth', block:'center', inline:'nearest'});
 
-    /* position tooltip */
-    const pos = step.position || 'bottom';
-    const tw = 340; /* tooltip max-width */
+    /* re-position after a brief delay so scroll has settled */
+    const _positionTut = () => {
+      const rect = targetEl.getBoundingClientRect();
+      const pad = 8;
+      spotlight.style.display = 'block';
+      spotlight.style.top = (rect.top - pad + window.scrollY) + 'px';
+      spotlight.style.left = (rect.left - pad) + 'px';
+      spotlight.style.width = (rect.width + pad*2) + 'px';
+      spotlight.style.height = (rect.height + pad*2) + 'px';
+      backdropFill.style.display = 'none';
 
-    if(pos === 'bottom'){
-      tooltip.style.top = (rect.bottom + pad + 12 + window.scrollY) + 'px';
-      tooltip.style.left = Math.max(12, Math.min(rect.left, window.innerWidth - tw - 20)) + 'px';
-    } else if(pos === 'top'){
-      tooltip.style.top = Math.max(12, (rect.top - pad - 12 + window.scrollY - 180)) + 'px';
-      tooltip.style.left = Math.max(12, Math.min(rect.left, window.innerWidth - tw - 20)) + 'px';
-    } else if(pos === 'left'){
-      tooltip.style.top = (rect.top + window.scrollY) + 'px';
-      tooltip.style.left = Math.max(12, rect.left - tw - 20) + 'px';
-    } else if(pos === 'right'){
-      tooltip.style.top = (rect.top + window.scrollY) + 'px';
-      tooltip.style.left = (rect.right + 16) + 'px';
-    }
+      const pos = step.position || 'bottom';
+      const tw = 340;
+      const tooltipH = 200; /* approx tooltip height */
 
-    /* scroll target into view if needed */
-    targetEl.scrollIntoView({behavior:'smooth', block:'nearest', inline:'nearest'});
+      if(pos === 'bottom'){
+        /* if tooltip would go off-screen below, flip to top */
+        const bottomY = rect.bottom + pad + 12;
+        if(bottomY + tooltipH > window.innerHeight && rect.top > tooltipH + 30){
+          tooltip.style.top = (rect.top - pad - 12 + window.scrollY - tooltipH) + 'px';
+        } else {
+          tooltip.style.top = (bottomY + window.scrollY) + 'px';
+        }
+        tooltip.style.left = Math.max(12, Math.min(rect.left, window.innerWidth - tw - 20)) + 'px';
+      } else if(pos === 'top'){
+        tooltip.style.top = Math.max(12, (rect.top - pad - 12 + window.scrollY - tooltipH)) + 'px';
+        tooltip.style.left = Math.max(12, Math.min(rect.left, window.innerWidth - tw - 20)) + 'px';
+      } else if(pos === 'left'){
+        tooltip.style.top = (rect.top + window.scrollY) + 'px';
+        tooltip.style.left = Math.max(12, rect.left - tw - 20) + 'px';
+      } else if(pos === 'right'){
+        tooltip.style.top = (rect.top + window.scrollY) + 'px';
+        tooltip.style.left = (rect.right + 16) + 'px';
+      }
+    };
+    _positionTut();
+    setTimeout(_positionTut, 400); /* re-position after smooth scroll completes */
   } else {
     /* center tooltip (no target) */
     spotlight.style.display = 'none';
